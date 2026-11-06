@@ -56,3 +56,5 @@ playwright-report/
 test-results/
 .local/
 .next-browser/
+.vinext/
+.cloudflare/

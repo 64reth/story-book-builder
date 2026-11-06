@@ -111,8 +111,10 @@ export type PublishJob = {
   remoteId?: string;
   designId?: string;
   designUrl?: string;
-  operation?: "create_from_design";
-  resultType?: "create_design";
+  operation?: "create_from_design" | "update_design";
+  resultType?: "create_design" | "update_design";
+  targetDesignId?: string;
+  manifest?: Record<string, string>;
   completedAt?: string;
   confirmedAt?: string;
 };

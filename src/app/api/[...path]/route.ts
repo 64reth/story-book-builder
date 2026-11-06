@@ -48,6 +48,12 @@ import {
 } from "@/lib/publishing";
 import { dataRoot } from "@/lib/storage";
 import type { Asset, PublishJob, Template } from "@/lib/types";
+import {
+  activeDraft,
+  draftCandidates,
+  refinementPlan,
+  selectDraft,
+} from "@/lib/refinement";
 
 const response = (data: unknown, status = 200, headers: HeadersInit = {}) =>
   Response.json(data, {
@@ -131,8 +137,41 @@ async function handler(request: Request, context: Context) {
         }
         if (method === "POST" && action === "validate")
           return response(await publishingValidation(id, true));
-        if (method === "POST" && action === "publish")
-          return response(await startPublishing(id), 201);
+        if (method === "POST" && action === "publish") {
+          const input = z
+            .object({
+              operation: z
+                .enum(["create_from_design", "update_design"])
+                .default("create_from_design"),
+              approved: z
+                .object({
+                  fields: z.array(z.string()),
+                  revision: z.number().int(),
+                  designId: z.string(),
+                })
+                .optional(),
+            })
+            .parse(await request.json().catch(() => ({})));
+          return response(
+            await startPublishing(id, input.operation, input.approved),
+            201,
+          );
+        }
+        if (method === "GET" && action === "drafts")
+          return response({
+            active: activeDraft(id),
+            candidates: draftCandidates(id),
+          });
+        if (method === "POST" && action === "drafts")
+          return response(
+            await selectDraft(
+              id,
+              z.object({ designId: z.string() }).parse(await json(request))
+                .designId,
+            ),
+          );
+        if (method === "POST" && action === "refinement-plan")
+          return response(await refinementPlan(id));
       }
     }
     if (section === "assets") {

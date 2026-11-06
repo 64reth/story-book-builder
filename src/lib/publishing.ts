@@ -19,9 +19,11 @@ import {
   now,
   preferences,
   saveJob,
+  put,
 } from "./repository";
 import { storage } from "./storage";
 import { buildAutofill, planAutofill, validateBook } from "./validation";
+import { fieldManifest, refinementPlan, MASTER } from "./refinement";
 import type {
   Asset,
   JobSummary,
@@ -94,7 +96,30 @@ async function unavailableAssets(assets: Asset[]) {
   }
   return unavailable;
 }
-export async function startPublishing(bookId: string) {
+export async function startPublishing(
+  bookId: string,
+  operation: "create_from_design" | "update_design" = "create_from_design",
+  approved?: { fields: string[]; revision: number; designId: string },
+) {
+  const refinement =
+    operation === "update_design" ? await refinementPlan(bookId) : null;
+  if (
+    refinement &&
+    (!approved ||
+      approved.revision !== refinement.revision ||
+      approved.designId !== refinement.designId ||
+      JSON.stringify([...approved.fields].sort()) !==
+        JSON.stringify(refinement.fields.map((f) => f.field).sort()))
+  )
+    throw new AppError(
+      "Review the current affected fields before refining. The book or destination may have changed.",
+      409,
+    );
+  if (refinement && !refinement.fields.length)
+    throw new AppError(
+      "No fields have changed since the last successful submission. No Canva job was created.",
+      409,
+    );
   const validation = await publishingValidation(bookId, true);
   if (validation.errors.length)
     throw new AppError(validation.errors[0].message, 422);
@@ -116,7 +141,14 @@ export async function startPublishing(bookId: string) {
     );
     if (checked.errors.length)
       throw new AppError(checked.errors[0].message, 422);
-    const fields = planAutofill(book, template, assets, unavailable).fields;
+    if (refinement && book.revision !== refinement.revision)
+      throw new AppError(
+        "The book changed during validation. Review the affected fields again.",
+        409,
+      );
+    const fields =
+      refinement?.fields ??
+      planAutofill(book, template, assets, unavailable).fields;
     const uploads = assets.filter((a) =>
       fields.some((f) => f.kind === "image" && f.assetId === a.id),
     );
@@ -150,7 +182,9 @@ export async function startPublishing(bookId: string) {
       },
       validation: checked,
       uploaded: {},
-      operation: "create_from_design",
+      operation,
+      targetDesignId: refinement?.designId,
+      manifest: refinement?.manifest ?? fieldManifest(fields, assets),
     };
     saveJob(job);
     return jobSummary(job);
@@ -171,11 +205,13 @@ async function confirmCreation(job: PublishJob, remote: RemoteJob) {
   if (
     remote.id !== job.remoteId ||
     remote.status !== "success" ||
-    remote.result?.type !== "create_design" ||
+    remote.result?.type !==
+      (job.operation === "update_design" ? "update_design" : "create_design") ||
     typeof design?.id !== "string" ||
     !design.id.trim() ||
     design.id === job.snapshot.template.id ||
-    design.id === "DAHaJgBbCJ4"
+    design.id === MASTER ||
+    (job.operation === "update_design" && design.id !== job.targetDesignId)
   )
     throw new AppError(
       "Canva returned an unexpected generation result. No completion was confirmed. Inspect the recorded job in Canva.",
@@ -218,13 +254,16 @@ async function confirmCreation(job: PublishJob, remote: RemoteJob) {
     );
   job.designId = design.id;
   job.designUrl = url;
-  job.operation = "create_from_design";
-  job.resultType = "create_design";
+  job.operation ??= "create_from_design";
+  job.resultType = remote.result!.type as "create_design" | "update_design";
   job.completedAt ??= job.status === "success" ? job.updatedAt : now();
   job.confirmedAt = now();
   job.status = "success";
   job.progress = 100;
-  job.message = `CREATED Canva design ${design.id}. Existing Canva books were not updated.`;
+  job.message =
+    job.operation === "update_design"
+      ? `UPDATED Canva design ${design.id}. Only reviewed changed fields were submitted.`
+      : `CREATED Canva design ${design.id}. Existing Canva books were not updated.`;
   storage().transaction(() => {
     // Keep the original generated-design creation timestamp when refreshing links.
     const previous = storage().get<{ document: string }>(
@@ -249,6 +288,7 @@ async function confirmCreation(job: PublishJob, remote: RemoteJob) {
       }),
     );
     saveJob(job);
+    put("settings", `active-draft:${job.bookId}`, { designId: design.id });
   });
 }
 
@@ -386,6 +426,24 @@ export async function advanceJob(id: string) {
           job.uploaded,
           job.snapshot.fields,
         );
+        const submission =
+          job.operation === "update_design"
+            ? {
+                ...payload,
+                type: "update_design",
+                design_id: job.targetDesignId,
+              }
+            : payload;
+        if (
+          job.operation === "update_design" &&
+          (!job.targetDesignId ||
+            job.targetDesignId === MASTER ||
+            job.targetDesignId === job.snapshot.template.id)
+        )
+          throw new AppError(
+            "Protected or missing update destination. No Canva request was submitted.",
+            422,
+          );
         job.status = "generating";
         job.remoteId = "uncertain";
         job.message = "Submitting Canva Autofill";
@@ -393,7 +451,7 @@ export async function advanceJob(id: string) {
         const remote = await remoteJob("/autofills", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
+          body: JSON.stringify(submission),
         });
         job.remoteId = remote.id;
         checkRemote(remote);
