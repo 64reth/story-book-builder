@@ -232,6 +232,13 @@ export class CanvaError extends AppError {
     super(message, status);
   }
 }
+// Provider text may echo manuscript content or credentials. Surface only a
+// bounded machine code alongside our actionable HTTP guidance.
+export function providerCode(value: unknown) {
+  return typeof value === "string" && /^[a-z][a-z0-9_]{0,63}$/.test(value)
+    ? value
+    : "unknown";
+}
 export async function canva<T>(
   endpoint: string,
   init: RequestInit = {},
@@ -267,14 +274,22 @@ export async function canva<T>(
               : response.status === 429
                 ? "Canva rate limit reached. Wait before retrying."
                 : "Check Canva service availability and retry.";
-    // Do not relay provider bodies: they may echo request data or credentials.
+    const body = await response.json().catch(() => null);
+    const code = providerCode(body?.code ?? body?.error?.code);
     throw new CanvaError(
-      `Canva returned ${response.status}. ${guidance}`,
+      `Canva returned ${response.status} (${code}). ${guidance}`,
       response.status === 401 ? 401 : 502,
       Number(response.headers.get("retry-after") || 0),
     );
   }
-  return response.json() as Promise<T>;
+  try {
+    return (await response.json()) as T;
+  } catch {
+    throw new AppError(
+      "Canva returned malformed JSON. No completion was confirmed. Retry the recorded job status check.",
+      502,
+    );
+  }
 }
 export async function inspectTemplate(id: string) {
   const template = get<Template>("templates", id);
@@ -321,10 +336,16 @@ export async function inspectTemplate(id: string) {
     throw e;
   }
 }
-export const remoteJob = (endpoint: string, init?: RequestInit) =>
+export const remoteJob = (
+  endpoint: string,
+  init?: RequestInit,
+  expectedId?: string,
+) =>
   canva<{ job: RemoteJob }>(endpoint, init).then((r) => {
     if (
-      !r.job?.id ||
+      typeof r?.job?.id !== "string" ||
+      !r.job.id.trim() ||
+      (expectedId !== undefined && r.job.id !== expectedId) ||
       !["in_progress", "success", "failed"].includes(r.job.status)
     )
       throw new AppError("Canva returned an unrecognized job response.", 502);

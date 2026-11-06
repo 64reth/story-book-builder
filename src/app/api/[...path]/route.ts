@@ -41,6 +41,7 @@ import {
 } from "@/lib/schema";
 import {
   advanceJob,
+  recheckJob,
   jobSummary,
   publishingValidation,
   startPublishing,
@@ -192,6 +193,8 @@ async function handler(request: Request, context: Context) {
     }
     if (section === "jobs" && id && method === "POST" && action === "advance")
       return response(await advanceJob(id));
+    if (section === "jobs" && id && method === "POST" && action === "recheck")
+      return response(await recheckJob(id));
     if (section === "settings" && method === "PUT") {
       const input = preferencesSchema.parse(await json(request));
       put("settings", "preferences", input);

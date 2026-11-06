@@ -12,6 +12,14 @@ import type { Book, JobSummary, Validation, Workspace } from "@/lib/types";
 import { api, Badge, date, Empty, Issues, Spinner } from "./ui";
 import { PageHeading, type Actions } from "./workspace";
 import { validateBook } from "@/lib/validation";
+const stage = (status: JobSummary["status"]) =>
+  ({
+    queued: "Preparing",
+    uploading: "Uploading",
+    generating: "Generating",
+    success: "Complete",
+    failed: "Failed",
+  })[status];
 export default function Publishing({
   data,
   actions,
@@ -31,6 +39,10 @@ export default function Publishing({
     [generating, setGenerating] = useState(false),
     [paused, setPaused] = useState(false);
   const [technicalError, setTechnicalError] = useState("");
+  const [rechecking, setRechecking] = useState<string | null>(null);
+  const [recheckErrors, setRecheckErrors] = useState<Record<string, string>>(
+    {},
+  );
   const [checkedRevision, setCheckedRevision] = useState<number | null>(null);
   const book = data.books.find((b) => b.id === selected),
     template = data.templates.find((t) => t.id === book?.templateId);
@@ -87,6 +99,27 @@ export default function Publishing({
       setValidation(null);
     } finally {
       setChecking(false);
+    }
+  }
+  async function recheck(id: string) {
+    setRechecking(id);
+    setRecheckErrors((previous) => ({ ...previous, [id]: "" }));
+    try {
+      const result = await api<JobSummary>(`jobs/${id}/recheck`, "POST");
+      await refresh();
+      setPaused(false);
+      notify(
+        result.status === "success"
+          ? `Canva confirmed CREATED design ${result.designId}. Link refreshed.`
+          : result.message,
+      );
+    } catch (error) {
+      setRecheckErrors((previous) => ({
+        ...previous,
+        [id]: (error as Error).message,
+      }));
+    } finally {
+      setRechecking(null);
     }
   }
   return (
@@ -198,7 +231,9 @@ export default function Publishing({
                       }
                       await refresh();
                       setPaused(false);
-                      notify("Publishing started");
+                      notify(
+                        "Draft creation queued. Canva completion has not yet been confirmed.",
+                      );
                     } catch (error) {
                       const message =
                         error instanceof Error
@@ -211,12 +246,13 @@ export default function Publishing({
                     }
                   }}
                 >
-                  {generating ? <Spinner /> : <Rocket size={17} />}Generate
+                  {generating ? <Spinner /> : <Rocket size={17} />}Create New
                   Canva Draft
                 </button>
               </div>
               <p className="form-note">
-                Creates a new copy. Canva controls the final layout; your source
+                Creates a separate Canva design every time. Existing Canva books
+                are not updated. Local saves do not change Canva. Your source
                 design stays unchanged.
               </p>
             </>
@@ -278,7 +314,7 @@ export default function Publishing({
               <Spinner />
               {active.title}
             </h2>
-            <Badge>{active.status}</Badge>
+            <Badge>{stage(active.status)}</Badge>
           </div>
           <p role="status">{active.message}</p>
           {!!active.validation?.skipped?.filter((field) => field.populated)
@@ -355,11 +391,46 @@ export default function Publishing({
                             : "neutral"
                       }
                     >
-                      {job.status}
+                      {stage(job.status)}
                     </Badge>
                   </td>
                   <td className="job-message">
                     {job.message}
+                    {job.status === "success" && (
+                      <p>
+                        <strong>CREATED a separate design</strong> · Existing
+                        Canva books were not updated.
+                      </p>
+                    )}
+                    {job.remoteId && job.remoteId !== "uncertain" && (
+                      <p>
+                        Canva job ID: <code>{job.remoteId}</code>
+                      </p>
+                    )}
+                    {job.resultType && (
+                      <p>
+                        API result: <code>{job.resultType}</code>
+                      </p>
+                    )}
+                    {job.confirmedAt && (
+                      <p>Confirmed: {date(job.confirmedAt)}</p>
+                    )}
+                    {job.remoteId && job.remoteId !== "uncertain" && (
+                      <button
+                        disabled={rechecking !== null || !!active}
+                        onClick={() => void recheck(job.id)}
+                      >
+                        {rechecking === job.id ? <Spinner /> : null}Check Canva
+                        status / refresh link
+                      </button>
+                    )}
+                    {recheckErrors[job.id] && (
+                      <p role="alert" className="warning">
+                        {recheckErrors[job.id]} Previous publishing records are
+                        preserved. Check the authorised Canva account in
+                        Settings before creating another draft.
+                      </p>
+                    )}
                     {!!job.validation?.skipped?.filter(
                       (field) => field.populated,
                     ).length && (
@@ -381,6 +452,11 @@ export default function Publishing({
                     )}
                   </td>
                   <td>
+                    {job.designId && (
+                      <p>
+                        Design ID: <code>{job.designId}</code>
+                      </p>
+                    )}
                     {job.designUrl ? (
                       <a
                         className="button"

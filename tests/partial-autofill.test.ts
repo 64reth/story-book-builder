@@ -234,6 +234,7 @@ test("the durable publishing workflow uploads and generates a partial new design
     if (endpoint.endsWith("/designs/partial-new"))
       return json({
         design: {
+          id: "partial-new",
           page_count: 33,
           urls: { edit_url: "https://www.canva.com/design/partial-new/edit" },
         },

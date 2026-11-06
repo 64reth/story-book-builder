@@ -94,7 +94,7 @@ test("create, autosave, import, reorder, version and validate a book", async ({
       .filter({ hasText: "Connect Canva in Settings." }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Generate Canva Draft", exact: true }),
+    page.getByRole("button", { name: "Create New Canva Draft", exact: true }),
   ).toBeDisabled();
   await page.goto(bookURL);
   await expect(

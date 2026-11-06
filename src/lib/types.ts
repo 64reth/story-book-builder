@@ -111,6 +111,10 @@ export type PublishJob = {
   remoteId?: string;
   designId?: string;
   designUrl?: string;
+  operation?: "create_from_design";
+  resultType?: "create_design";
+  completedAt?: string;
+  confirmedAt?: string;
 };
 export type JobSummary = Omit<
   PublishJob,

@@ -486,6 +486,7 @@ test("publishing uploads, polls, autofills a new design, verifies count and save
     if (endpoint.endsWith("/designs/new-design"))
       return json({
         design: {
+          id: "new-design",
           page_count: 24,
           urls: { edit_url: "https://www.canva.com/design/new-design/edit" },
         },

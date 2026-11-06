@@ -38,7 +38,7 @@ test("partial draft remains enabled with compact advisories and explicit skipped
   await page.goto("/publishing");
   const readiness = page.getByRole("region", { name: "Draft readiness" });
   const generate = page.getByRole("button", {
-    name: "Generate Canva Draft",
+    name: "Create New Canva Draft",
     exact: true,
   });
   await expect(generate).toBeEnabled();
@@ -96,7 +96,7 @@ test("partial draft remains enabled with compact advisories and explicit skipped
   });
   await generate.click();
   await expect.poll(() => generations).toBe(1);
-  await expect(page.getByRole("table")).toContainText("queued");
+  await expect(page.getByRole("table")).toContainText("Preparing");
   await expect(page.getByRole("table")).toContainText("Submission report");
   await expect(page.getByRole("table")).toContainText(
     "Populated fields skipped: 1",
@@ -141,12 +141,12 @@ test("actual API failures have an explicit technical retry state rather than cre
     "Canva returned 403",
   );
   await expect(
-    page.getByRole("button", { name: "Generate Canva Draft", exact: true }),
+    page.getByRole("button", { name: "Create New Canva Draft", exact: true }),
   ).toBeDisabled();
   failed = false;
   await readiness.getByRole("button", { name: "Retry validation" }).click();
   const generate = page.getByRole("button", {
-    name: "Generate Canva Draft",
+    name: "Create New Canva Draft",
     exact: true,
   });
   await expect(generate).toBeEnabled();
@@ -178,6 +178,6 @@ test("an entirely empty draft only blocks because no valid request can be constr
       .filter({ hasText: "33 pages have no manuscript text" }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "Generate Canva Draft", exact: true }),
+    page.getByRole("button", { name: "Create New Canva Draft", exact: true }),
   ).toBeDisabled();
 });

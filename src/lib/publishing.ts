@@ -6,6 +6,8 @@ import {
   inspectTemplate,
   remoteJob,
   CanvaError,
+  canva,
+  providerCode,
 } from "./canva";
 import { assetPath, readAsset } from "./assets";
 import {
@@ -32,7 +34,20 @@ export function jobSummary(job: PublishJob): JobSummary {
   void _;
   void __;
   void ___;
-  return summary;
+  if (
+    job.status === "success" &&
+    (!job.remoteId ||
+      job.remoteId === "uncertain" ||
+      !job.designId ||
+      !job.designUrl)
+  )
+    return {
+      ...summary,
+      status: "failed",
+      message:
+        "Stored completion is missing its Canva job ID, design ID or result URL. Check the existing job status before creating another draft.",
+    };
+  return { ...summary, operation: job.operation ?? "create_from_design" };
 }
 export async function publishingValidation(bookId: string, live = false) {
   const book = bookById(bookId);
@@ -135,6 +150,7 @@ export async function startPublishing(bookId: string) {
       },
       validation: checked,
       uploaded: {},
+      operation: "create_from_design",
     };
     saveJob(job);
     return jobSummary(job);
@@ -143,9 +159,150 @@ export async function startPublishing(bookId: string) {
 function checkRemote(remote: RemoteJob) {
   if (remote.status === "failed")
     throw new AppError(
-      `Canva job failed (${remote.error?.code || "unknown"}). Check the asset, template access and Canva plan, then generate a new draft.`,
+      `Canva job failed (${providerCode(remote.error?.code)}). Check the asset, template access and Canva plan. No successful design was confirmed.`,
       502,
     );
+}
+// Both normal polling and explicit recovery use GETs only after submission.
+// Never accept an HTTP 200 or a pending job as a completed design.
+async function confirmCreation(job: PublishJob, remote: RemoteJob) {
+  checkRemote(remote);
+  const design = remote.result?.design;
+  if (
+    remote.id !== job.remoteId ||
+    remote.status !== "success" ||
+    remote.result?.type !== "create_design" ||
+    typeof design?.id !== "string" ||
+    !design.id.trim() ||
+    design.id === job.snapshot.template.id ||
+    design.id === "DAHaJgBbCJ4"
+  )
+    throw new AppError(
+      "Canva returned an unexpected generation result. No completion was confirmed. Inspect the recorded job in Canva.",
+      502,
+    );
+  const meta = await canva<{
+    design: { id: string; page_count?: number; urls?: { edit_url?: string } };
+  }>(`/designs/${encodeURIComponent(design.id)}`);
+  if (meta?.design?.id !== design.id)
+    throw new AppError(
+      "Canva design lookup did not match the generated design ID. No completion was confirmed.",
+      502,
+    );
+  if (
+    job.snapshot.template.pageCount !== null &&
+    meta.design.page_count !== job.snapshot.template.pageCount
+  )
+    throw new AppError(
+      `Generated design page count did not match the ${job.snapshot.template.pageCount}-page source. Inspect design ${design.id} in Canva.`,
+      502,
+    );
+  const url = meta.design.urls?.edit_url || design.urls?.edit_url || design.url;
+  let validUrl = false;
+  try {
+    const parsed = new URL(url!);
+    validUrl =
+      parsed.protocol === "https:" &&
+      ["canva.com", "www.canva.com"].includes(parsed.hostname) &&
+      !parsed.username &&
+      !parsed.password &&
+      !parsed.port &&
+      /^\/(api\/)?design\//.test(parsed.pathname);
+  } catch {
+    /* Invalid or missing provider URL. */
+  }
+  if (!validUrl)
+    throw new AppError(
+      "Canva did not return a valid edit URL. Retry the status check to recover the result.",
+      502,
+    );
+  job.designId = design.id;
+  job.designUrl = url;
+  job.operation = "create_from_design";
+  job.resultType = "create_design";
+  job.completedAt ??= job.status === "success" ? job.updatedAt : now();
+  job.confirmedAt = now();
+  job.status = "success";
+  job.progress = 100;
+  job.message = `CREATED Canva design ${design.id}. Existing Canva books were not updated.`;
+  storage().transaction(() => {
+    // Keep the original generated-design creation timestamp when refreshing links.
+    const previous = storage().get<{ document: string }>(
+      "SELECT document FROM generated_designs WHERE id=?",
+      design.id,
+    );
+    const record = previous
+      ? JSON.parse(previous.document)
+      : { id: design.id, createdAt: job.completedAt };
+    storage().run(
+      "INSERT OR REPLACE INTO generated_designs VALUES (?, ?, ?, ?)",
+      design.id,
+      job.id,
+      job.bookId,
+      JSON.stringify({
+        ...record,
+        url,
+        remoteId: job.remoteId,
+        operation: job.operation,
+        resultType: job.resultType,
+        confirmedAt: job.confirmedAt,
+      }),
+    );
+    saveJob(job);
+  });
+}
+
+export async function recheckJob(id: string) {
+  let job = get<PublishJob>("publishing_jobs", id);
+  if (!job) throw new AppError("Publishing job not found.", 404);
+  if (!job.remoteId || job.remoteId === "uncertain")
+    throw new AppError(
+      "No confirmed Autofill job ID is available. Check Canva manually; this request will not be replayed.",
+      409,
+    );
+  const lease = storage().run(
+    "UPDATE publishing_jobs SET lease_until=? WHERE id=? AND lease_until < ?",
+    Date.now() + 90000,
+    id,
+    Date.now(),
+  );
+  if (!lease.changes)
+    throw new AppError(
+      "A status check is already running. Try again shortly.",
+      409,
+    );
+  job = get<PublishJob>("publishing_jobs", id)!;
+  try {
+    if (!job.remoteId || job.remoteId === "uncertain")
+      throw new AppError(
+        "No confirmed Autofill job ID is available. This request will not be replayed.",
+        409,
+      );
+    const remote = await remoteJob(
+      `/autofills/${encodeURIComponent(job.remoteId)}`,
+      undefined,
+      job.remoteId,
+    );
+    checkRemote(remote);
+    if (remote.status === "success") await confirmCreation(job, remote);
+    else {
+      if (job.status === "success")
+        throw new AppError(
+          "Canva now reports an incomplete job. The previous completion record has been preserved; check account access before retrying.",
+          502,
+        );
+      // Resume only the known job's safe polling stage. Never replay its POST.
+      job.status = "generating";
+      job.attempts = 0;
+      job.nextAt = 0;
+      job.message =
+        "Canva job is still generating. Status checks resumed; no new design was requested.";
+      saveJob(job);
+    }
+    return jobSummary(job);
+  } finally {
+    storage().run("UPDATE publishing_jobs SET lease_until=0 WHERE id=?", id);
+  }
 }
 export async function advanceJob(id: string) {
   let job = get<PublishJob>("publishing_jobs", id);
@@ -194,6 +351,7 @@ export async function advanceJob(id: string) {
             body: new Uint8Array(bytes),
           });
           job.pendingUpload.remoteId = remote.id;
+          checkRemote(remote);
           job.attempts = 0;
         } else if (job.pendingUpload.remoteId === "uncertain")
           throw new AppError(
@@ -203,6 +361,8 @@ export async function advanceJob(id: string) {
         else {
           const remote = await remoteJob(
             `/asset-uploads/${encodeURIComponent(job.pendingUpload.remoteId)}`,
+            undefined,
+            job.pendingUpload.remoteId,
           );
           checkRemote(remote);
           if (remote.status === "success") {
@@ -236,6 +396,7 @@ export async function advanceJob(id: string) {
           body: JSON.stringify(payload),
         });
         job.remoteId = remote.id;
+        checkRemote(remote);
         job.attempts = 0;
         job.progress = 75;
         job.message = "Canva is generating the editable draft";
@@ -248,54 +409,12 @@ export async function advanceJob(id: string) {
         );
       const remote = await remoteJob(
         `/autofills/${encodeURIComponent(job.remoteId)}`,
+        undefined,
+        job.remoteId,
       );
       checkRemote(remote);
       if (remote.status === "success") {
-        const design = remote.result?.design;
-        if (
-          remote.result?.type !== "create_design" ||
-          !design?.id ||
-          design.id === job.snapshot.template.id
-        )
-          throw new AppError(
-            "Canva returned an unexpected generation result. Inspect your Canva designs.",
-            502,
-          );
-        job.designId = design.id;
-        job.designUrl = design.urls?.edit_url || design.url;
-        // Verify the real result count, even when Autofill omits it.
-        const { canva } = await import("./canva");
-        const meta = await canva<{
-          design: { page_count?: number; urls?: { edit_url?: string } };
-        }>(`/designs/${encodeURIComponent(design.id)}`);
-        if (
-          job.snapshot.template.pageCount !== null &&
-          meta.design.page_count !== job.snapshot.template.pageCount
-        )
-          throw new AppError(
-            `Generated design page count did not match the ${job.snapshot.template.pageCount}-page source. Inspect design ${design.id} in Canva.`,
-            502,
-          );
-        job.designUrl = meta.design.urls?.edit_url || job.designUrl;
-        if (
-          !job.designUrl ||
-          !/^https:\/\/(www\.)?canva\.com\//.test(job.designUrl)
-        )
-          throw new AppError("Canva did not return a valid edit URL.", 502);
-        job.status = "success";
-        job.progress = 100;
-        job.message = "Editable Canva draft created";
-        storage().run(
-          "INSERT OR REPLACE INTO generated_designs VALUES (?, ?, ?, ?)",
-          design.id,
-          job.id,
-          job.bookId,
-          JSON.stringify({
-            id: design.id,
-            url: job.designUrl,
-            createdAt: now(),
-          }),
-        );
+        await confirmCreation(job, remote);
       } else {
         job.attempts++;
         job.progress = Math.min(95, 75 + job.attempts);
