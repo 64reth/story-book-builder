@@ -15,6 +15,8 @@ npm run dev
 
 Open **http://127.0.0.1:3000**. Use this exact hostname: API origin checks reject `localhost` when `APP_URL` is `127.0.0.1`. The dev/start scripts bind to loopback. Stop any older `next dev` instance before starting a new one. If PowerShell blocks `npm.ps1`, use `npm.cmd` for all commands.
 
+Build 001A fixes a startup hydration hang when a server started with Next's default `localhost` metadata is opened through `127.0.0.1`. `allowedDevOrigins` explicitly permits the OAuth loopback hostname for Next's development WebSocket/debug stream. Reload an already-open stuck tab after the configuration reloads. Workspace requests now have a 15-second deadline, payload validation and an explicit **Retry loading workspace** state. Startup does not require Canva credentials or authorization. See [Build 001A investigation](docs/BUILD001A.md) for the reproduction and verification evidence.
+
 Set these values in `.env.local`; existing values are never changed by the app:
 
 | Variable                   | Purpose                                                                                      |
@@ -107,6 +109,8 @@ npm start
 Core tests use temporary SQLite storage and mocked Canva responses. They cover persistence across processes, revisions/ordering/versions, image safety/reference protection, OAuth state/PKCE/encryption/refresh, API errors, mappings, preflight and confirmed/failing/interrupted publishing jobs. These are contract tests, not proof of a live Canva connection.
 
 Browser tests start an isolated app on **127.0.0.1:3101**, use `.local/browser-*` storage and a separate `.next-browser` build directory, and never touch real books or credentials. They use installed Chrome on Windows. Without Chrome, run `npx playwright install chromium` first. Tests cover manuscript create/import/save/reload, reordering, checkpoints, asset upload/assignment/replacement/protected deletion, API boundaries, six routes at mobile width and persisted themes. Screenshots go under `.local/`; failure traces go to `test-results/`.
+
+The browser test server intentionally uses Next's default hostname while Chrome opens `127.0.0.1`; this reproduces the hostname mismatch behind Build 001A. Chrome runs with extensions disabled. Startup regressions cover the HMR handshake and initial API request, HTTP/network/JSON/schema failures, a stalled request deadline, recovery through Retry, and empty-library navigation with Canva disconnected. Unit tests additionally cover a stalled response body and cancellation when leaving a page.
 
 ## Build 001 limits
 

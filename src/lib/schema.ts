@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { Workspace } from "./types";
 export const preferencesSchema = z
   .object({
     width: z.number().min(1).max(30),
@@ -63,3 +64,67 @@ export const templateInput = z.object({
 export const mappingSchema = z
   .array(z.object({ image: z.string().max(255), text: z.string().max(255) }))
   .max(100);
+
+// Validate startup data before it is committed to the client tree.
+export const workspaceResponseSchema: z.ZodType<Workspace> = z.object({
+  books: z.array(
+    bookEdit.safeExtend({
+      id: z.string().uuid(),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+    }),
+  ),
+  assets: z.array(
+    z.object({
+      id: z.string().uuid(),
+      name: z.string(),
+      filename: z.string(),
+      mime: z.string(),
+      width: z.number(),
+      height: z.number(),
+      size: z.number(),
+      createdAt: z.string(),
+    }),
+  ),
+  templates: z.array(
+    z.object({
+      id: z.string(),
+      name: z.string(),
+      pageCount: z.number().nullable(),
+      dataset: z.record(z.string(), z.object({ type: z.string() })).nullable(),
+      mapping: mappingSchema,
+      checkedAt: z.string().nullable(),
+      error: z.string().nullable(),
+    }),
+  ),
+  jobs: z.array(
+    z.object({
+      id: z.string(),
+      bookId: z.string(),
+      title: z.string(),
+      status: z.enum([
+        "queued",
+        "uploading",
+        "generating",
+        "success",
+        "failed",
+      ]),
+      message: z.string(),
+      progress: z.number(),
+      createdAt: z.string(),
+      updatedAt: z.string(),
+      nextAt: z.number(),
+      attempts: z.number(),
+      remoteId: z.string().optional(),
+      designId: z.string().optional(),
+      designUrl: z.string().optional(),
+    }),
+  ),
+  preferences: preferencesSchema,
+  connection: z.object({
+    connected: z.boolean(),
+    configured: z.boolean(),
+    missing: z.array(z.string()),
+  }),
+  storage: z.object({ bytes: z.number(), assets: z.number() }),
+});

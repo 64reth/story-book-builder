@@ -12,12 +12,16 @@ export default defineConfig({
   use: {
     baseURL: "http://127.0.0.1:3101",
     viewport: { width: 1440, height: 1000 },
-    launchOptions: existsSync(chrome) ? { executablePath: chrome } : {},
+    launchOptions: {
+      ...(existsSync(chrome) ? { executablePath: chrome } : {}),
+      args: ["--disable-extensions"],
+    },
     screenshot: "only-on-failure",
     trace: "retain-on-failure",
   },
   webServer: {
-    command: "npm run dev -- --port 3101",
+    // Match the original failure: Next defaults to localhost, browser uses 127.0.0.1.
+    command: "node node_modules/next/dist/bin/next dev --port 3101",
     url: "http://127.0.0.1:3101",
     reuseExistingServer: false,
     timeout: 60000,

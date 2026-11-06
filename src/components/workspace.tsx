@@ -21,6 +21,7 @@ import {
   PanelLeftClose,
 } from "lucide-react";
 import type { Book, Workspace } from "@/lib/types";
+import { loadWorkspace } from "@/lib/workspace-client";
 import { api, Badge, date, Empty, Modal, PagePreview, Spinner } from "./ui";
 import Editor from "./editor";
 import Assets from "./assets-view";
@@ -45,6 +46,7 @@ export default function WorkspaceApp() {
   const pathname = usePathname();
   const [data, setData] = useState<Workspace | null>(null),
     [error, setError] = useState(""),
+    [loadAttempt, setLoadAttempt] = useState(0),
     [toast, setToast] = useState<{ message: string; error: boolean } | null>(
       null,
     ),
@@ -53,7 +55,7 @@ export default function WorkspaceApp() {
     [unsaved, setUnsaved] = useState(false),
     [mobileMenu, setMobileMenu] = useState(false);
   const refresh = useCallback(async () => {
-    const value = await api<Workspace>("workspace");
+    const value = await loadWorkspace();
     setData(value);
     document.documentElement.dataset.theme = value.preferences.theme;
   }, []);
@@ -78,8 +80,10 @@ export default function WorkspaceApp() {
     [refresh, notify],
   );
   useEffect(() => {
-    void api<Workspace>("workspace")
+    const controller = new AbortController();
+    void loadWorkspace({ signal: controller.signal })
       .then((value) => {
+        if (controller.signal.aborted) return;
         setData(value);
         document.documentElement.dataset.theme = value.preferences.theme;
         const params = new URLSearchParams(window.location.search);
@@ -87,8 +91,16 @@ export default function WorkspaceApp() {
         else if (params.has("connected"))
           notify("Canva connected. Inspect your template’s live dataset next.");
       })
-      .catch((e) => setError(e.message));
-  }, [notify]);
+      .catch((e: unknown) => {
+        if (!controller.signal.aborted)
+          setError(
+            e instanceof Error && e.message.trim()
+              ? e.message
+              : "The workspace could not be loaded. Retry loading the workspace.",
+          );
+      });
+    return () => controller.abort();
+  }, [notify, loadAttempt]);
   useEffect(() => {
     if (!toast) return;
     const timer = setTimeout(() => setToast(null), toast.error ? 14000 : 6000);
@@ -222,19 +234,27 @@ export default function WorkspaceApp() {
           className={editorId ? "main-content editor-content" : "main-content"}
         >
           {error ? (
-            <div className="notice error">
-              <span>{error}</span>
+            <div className="notice error" role="alert">
+              <div>
+                <strong>Workspace could not be loaded</strong>
+                <p>{error}</p>
+              </div>
               <button
                 onClick={() => {
                   setError("");
-                  void refresh().catch((e) => setError(e.message));
+                  setLoadAttempt((attempt) => attempt + 1);
                 }}
               >
-                Retry
+                Retry loading workspace
               </button>
             </div>
           ) : !data ? (
-            <div className="loading">
+            <div
+              className="loading"
+              role="status"
+              aria-live="polite"
+              aria-busy="true"
+            >
               <Spinner />
               Opening your workspace…
             </div>
