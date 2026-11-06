@@ -11,6 +11,7 @@ import {
 import type { Book, JobSummary, Validation, Workspace } from "@/lib/types";
 import { api, Badge, date, Empty, Issues, Spinner } from "./ui";
 import { PageHeading, type Actions } from "./workspace";
+import { validateBook } from "@/lib/validation";
 export default function Publishing({
   data,
   actions,
@@ -29,12 +30,26 @@ export default function Publishing({
     [checking, setChecking] = useState(false),
     [generating, setGenerating] = useState(false),
     [paused, setPaused] = useState(false);
+  const [technicalError, setTechnicalError] = useState("");
+  const [checkedRevision, setCheckedRevision] = useState<number | null>(null);
   const book = data.books.find((b) => b.id === selected),
     template = data.templates.find((t) => t.id === book?.templateId);
   const active = data.jobs.find(
     (j) => !["failed", "success"].includes(j.status),
   );
   const { refresh, notify } = actions;
+  const readiness =
+    validation && checkedRevision === book?.revision
+      ? validation
+      : book
+        ? validateBook(
+            book,
+            template,
+            data.assets,
+            data.connection.connected,
+            data.preferences.dpi,
+          )
+        : null;
   // Progress is persisted server-side. Keeping this view open drives bounded polling.
   useEffect(() => {
     if (!active || paused) return;
@@ -61,11 +76,14 @@ export default function Publishing({
   async function check() {
     if (!book) return;
     setChecking(true);
+    setTechnicalError("");
     try {
       setValidation(await api<Validation>(`books/${book.id}/validate`, "POST"));
+      setCheckedRevision(book.revision);
       await refresh();
     } catch (e) {
       notify((e as Error).message, true);
+      setTechnicalError((e as Error).message);
       setValidation(null);
     } finally {
       setChecking(false);
@@ -90,6 +108,7 @@ export default function Publishing({
               onChange={(e) => {
                 setSelected(e.target.value);
                 setValidation(null);
+                setTechnicalError("");
               }}
             >
               <option value="">Select a book</option>
@@ -113,6 +132,7 @@ export default function Publishing({
                   value={book.templateId || ""}
                   onChange={(e) => {
                     setValidation(null);
+                    setTechnicalError("");
                     void actions.run(
                       () =>
                         api(`books/${book.id}`, "PUT", {
@@ -160,17 +180,35 @@ export default function Publishing({
                     generating ||
                     checking ||
                     !!active ||
-                    !validation ||
-                    validation.errors.length > 0
+                    !!technicalError ||
+                    !readiness ||
+                    readiness.errors.length > 0
                   }
                   onClick={async () => {
                     setGenerating(true);
-                    const job = await actions.run(
-                      () => api<JobSummary>(`books/${book.id}/publish`, "POST"),
-                      "Publishing started",
-                    );
-                    if (job) setPaused(false);
-                    setGenerating(false);
+                    setTechnicalError("");
+                    try {
+                      const job = await api<JobSummary>(
+                        `books/${book.id}/publish`,
+                        "POST",
+                      );
+                      if (job.validation) {
+                        setValidation(job.validation);
+                        setCheckedRevision(book.revision);
+                      }
+                      await refresh();
+                      setPaused(false);
+                      notify("Publishing started");
+                    } catch (error) {
+                      const message =
+                        error instanceof Error
+                          ? error.message
+                          : "Canva could not generate a draft. Validate and retry.";
+                      setTechnicalError(message);
+                      notify(message, true);
+                    } finally {
+                      setGenerating(false);
+                    }
                   }}
                 >
                   {generating ? <Spinner /> : <Rocket size={17} />}Generate
@@ -184,33 +222,50 @@ export default function Publishing({
             </>
           )}
         </section>
-        <section className="panel validation-panel">
+        <section
+          className="panel validation-panel"
+          aria-label="Draft readiness"
+        >
           <div className="section-head">
-            <h2>Readiness check</h2>
+            <h2>Draft readiness</h2>
             <Badge
               tone={
-                validation && !validation.errors.length ? "green" : "neutral"
+                readiness && !readiness.errors.length && !technicalError
+                  ? "green"
+                  : "neutral"
               }
             >
               {checking
                 ? "Checking…"
-                : validation
-                  ? `${validation.errors.length} errors`
-                  : "Not validated"}
+                : technicalError
+                  ? "Needs retry"
+                  : readiness
+                    ? readiness.errors.length
+                      ? "Unavailable"
+                      : "Available"
+                    : "Select a book"}
             </Badge>
           </div>
+          {technicalError && (
+            <div role="alert" className="notice error">
+              <span>{technicalError}</span>
+              <button disabled={checking} onClick={() => void check()}>
+                Retry validation
+              </button>
+            </div>
+          )}
           {checking ? (
             <div className="loading">
               <Spinner />
               Checking live template access and book content…
             </div>
-          ) : validation ? (
-            <Issues value={validation} />
+          ) : readiness ? (
+            <Issues value={readiness} />
           ) : (
             <Empty icon={ShieldCheck} title="Validate before generating">
               <p>
-                Checks include live template access, page mapping, manuscript,
-                illustrations and print resolution.
+                Choose a book to see compatible fields and draft advisories.
+                Live Canva access is checked again when generating.
               </p>
             </Empty>
           )}
@@ -226,6 +281,18 @@ export default function Publishing({
             <Badge>{active.status}</Badge>
           </div>
           <p role="status">{active.message}</p>
+          {!!active.validation?.skipped?.filter((field) => field.populated)
+            .length && (
+            <p className="warning">
+              Populated fields skipped:{" "}
+              {
+                active.validation.skipped.filter((field) => field.populated)
+                  .length
+              }
+              . Review the submission report below; that content was not sent to
+              Canva.
+            </p>
+          )}
           <div className="progress-track">
             <span style={{ width: `${active.progress}%` }} />
           </div>
@@ -247,6 +314,12 @@ export default function Publishing({
             Keep Publishing open to continue. Returning here resumes this job
             after an app restart.
           </p>
+          {active.validation && (
+            <details className="validation-details">
+              <summary>Submission report</summary>
+              <Issues value={active.validation} />
+            </details>
+          )}
         </section>
       )}
       <div className="section-head">
@@ -285,7 +358,28 @@ export default function Publishing({
                       {job.status}
                     </Badge>
                   </td>
-                  <td className="job-message">{job.message}</td>
+                  <td className="job-message">
+                    {job.message}
+                    {!!job.validation?.skipped?.filter(
+                      (field) => field.populated,
+                    ).length && (
+                      <p className="warning">
+                        Populated fields skipped:{" "}
+                        {
+                          job.validation.skipped.filter(
+                            (field) => field.populated,
+                          ).length
+                        }{" "}
+                        · see report
+                      </p>
+                    )}
+                    {job.validation && (
+                      <details className="validation-details">
+                        <summary>Submission report</summary>
+                        <Issues value={job.validation} />
+                      </details>
+                    )}
+                  </td>
                   <td>
                     {job.designUrl ? (
                       <a

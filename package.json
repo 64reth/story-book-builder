@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start --hostname 127.0.0.1",
     "lint": "eslint",
-    "test": "tsx --test tests/core.test.ts tests/workspace-client.test.ts",
+    "test": "tsx --test tests/core.test.ts tests/workspace-client.test.ts tests/partial-autofill.test.ts",
     "test:browser": "playwright test",
     "typecheck": "tsc --noEmit"
   },

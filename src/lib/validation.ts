@@ -1,69 +1,180 @@
-import type { Asset, Book, Mapping, Template, Validation } from "./types";
+import type {
+  Asset,
+  AutofillField,
+  Book,
+  Issue,
+  Mapping,
+  SkippedField,
+  Template,
+  Validation,
+} from "./types";
+
 export function defaultMapping(count: number): Mapping {
   return Array.from({ length: count }, (_, i) => ({
     image: `PAGE_${String(i + 1).padStart(2, "0")}_IMAGE`,
     text: `PAGE_${String(i + 1).padStart(2, "0")}_TEXT`,
   }));
 }
+export function pageRanges(pages: number[]) {
+  const sorted = [...new Set(pages)].sort((a, b) => a - b),
+    ranges: string[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const start = sorted[i];
+    let end = start;
+    while (sorted[i + 1] === end + 1) end = sorted[++i];
+    ranges.push(start === end ? String(start) : `${start}–${end}`);
+  }
+  return ranges.join(", ");
+}
+function fieldUsage(template: Template, count: number) {
+  const usage = new Map<string, number>();
+  template.mapping.slice(0, count).forEach((row) =>
+    [row.image, row.text].forEach((field) => {
+      if (field) usage.set(field, (usage.get(field) ?? 0) + 1);
+    }),
+  );
+  return usage;
+}
+function mappingIssue(
+  template: Template,
+  index: number,
+  kind: "image" | "text",
+  usage: Map<string, number>,
+): Issue | undefined {
+  const page = index + 1,
+    field = template.mapping[index]?.[kind] || "";
+  if (!field || !template.dataset?.[field])
+    return {
+      code: "missing_field",
+      page,
+      message: `Page ${page} ${kind} could not be mapped because ${field || "its field"} is ${field ? "absent from the Canva dataset" : "unassigned"}. Assign a compatible label to include this content automatically.`,
+    };
+  const actual = template.dataset[field].type;
+  if (actual !== kind)
+    return {
+      code: "field_type",
+      page,
+      message: `Page ${page} ${kind} could not be mapped because ${field} is ${/^[aeiou]/i.test(actual) ? "an" : "a"} ${actual} field. Correct the label in Canva to include this ${kind === "text" ? "text" : "illustration"} automatically.`,
+    };
+  if ((usage.get(field) ?? 0) > 1)
+    return {
+      code: "duplicate",
+      page,
+      message: `Page ${page} ${kind}: ${field} is mapped more than once. Conflicting mappings are skipped; assign distinct fields to include this content.`,
+    };
+}
 export function validateTemplate(
   template: Template,
   count = template.pageCount ?? template.mapping.length,
 ): Validation {
-  const errors: Validation["errors"] = [],
-    warnings: Validation["warnings"] = [];
-  if (!template.dataset || !template.checkedAt || template.error)
-    errors.push({
+  const result: Validation = { errors: [], warnings: [], details: [] };
+  if (!template.dataset || !template.checkedAt || template.error) {
+    result.errors.push({
       code: "dataset",
       message:
-        template.error || "Inspect the live Canva dataset before publishing.",
+        template.error ||
+        "Inspect the live Canva dataset before generating a draft.",
     });
+    return result;
+  }
   if (template.pageCount === null)
-    errors.push({
+    result.warnings.push({
       code: "page_count_unknown",
-      message: "Canva has not confirmed the source design page count.",
+      message:
+        "Canva has not reported a page count. The draft will retain the source design’s pages.",
     });
   else if (template.pageCount !== count)
-    errors.push({
+    result.warnings.push({
       code: "page_count",
-      message: `Book has ${count} pages; template has ${template.pageCount}. Select a matching template.`,
+      message: `Book has ${count} pages; the source design has ${template.pageCount}. The new design retains the source pages; unmatched content is skipped, without adding or removing pages.`,
     });
   if (template.mapping.length !== count)
-    errors.push({
+    result.warnings.push({
       code: "mapping_count",
-      message: `Map exactly ${count} pages.`,
+      message: `${template.mapping.length} mapping rows are registered for ${count} book pages. Only compatible mapped fields will be submitted.`,
     });
-  const used = new Set<string>();
-  template.mapping.forEach((row, i) => {
-    for (const type of ["image", "text"] as const) {
-      const field = row[type];
-      if (!field || !template.dataset?.[field])
-        errors.push({
-          code: "missing_field",
-          page: i + 1,
-          message: `Page ${i + 1}: ${field || type + " field"} is missing from the dataset.`,
-        });
-      else if (template.dataset[field].type !== type)
-        errors.push({
-          code: "field_type",
-          page: i + 1,
-          message: `${field} accepts ${template.dataset[field].type}, expected ${type}.`,
-        });
-      if (field && used.has(field))
-        errors.push({
-          code: "duplicate",
-          page: i + 1,
-          message: `${field} is mapped more than once.`,
-        });
-      used.add(field);
+  const usage = fieldUsage(template, count),
+    issues: Issue[] = [];
+  for (let i = 0; i < count; i++)
+    for (const kind of ["image", "text"] as const) {
+      const issue = mappingIssue(template, i, kind, usage);
+      if (issue) issues.push(issue);
+    }
+  result.details!.push(...issues);
+  for (const code of ["field_type", "missing_field", "duplicate"]) {
+    const group = issues.filter((i) => i.code === code);
+    if (group.length)
+      result.warnings.push(
+        group.length === 1
+          ? group[0]
+          : {
+              code,
+              message: `${group.length} page fields ${code === "field_type" ? "have incompatible Canva types" : code === "duplicate" ? "have conflicting duplicate mappings" : "are missing or unassigned"} and will be skipped. See field details to include this content.`,
+            },
+      );
+  }
+  const extra = Object.keys(template.dataset).filter(
+    (field) => !usage.has(field),
+  );
+  if (extra.length)
+    result.warnings.push({
+      code: "unmapped",
+      message: `${extra.length} source dataset ${extra.length === 1 ? "field has" : "fields have"} no page mapping and will retain template content.`,
+    });
+  return result;
+}
+export function planAutofill(
+  book: Book,
+  template: Template,
+  assets?: Asset[],
+  unavailableAssetIds: string[] = [],
+) {
+  const fields: AutofillField[] = [],
+    skipped: SkippedField[] = [],
+    usage = fieldUsage(template, book.pages.length);
+  book.pages.forEach((page, i) => {
+    for (const kind of ["image", "text"] as const) {
+      const field = template.mapping[i]?.[kind] || "",
+        populated = kind === "text" ? !!page.text.trim() : !!page.assetId;
+      const issue = mappingIssue(template, i, kind, usage);
+      let reason = issue?.message;
+      if (!reason && !populated)
+        reason =
+          kind === "text"
+            ? "No manuscript text; template content is retained."
+            : "No illustration assigned; template content is retained.";
+      if (!reason && kind === "image") {
+        const asset = assets?.find((a) => a.id === page.assetId);
+        if (assets && !asset)
+          reason =
+            "The assigned illustration is unavailable; template content is retained.";
+        else if (
+          asset &&
+          !["image/png", "image/jpeg", "image/webp"].includes(asset.mime)
+        )
+          reason =
+            "The assigned image format is unsupported; template content is retained.";
+        else if (unavailableAssetIds.includes(page.assetId!))
+          reason =
+            "The illustration file is missing or changed on disk; template content is retained. Replace the file to include this artwork.";
+      }
+      if (reason) skipped.push({ page: i + 1, field, kind, populated, reason });
+      else
+        fields.push(
+          kind === "text"
+            ? { page: i + 1, field, kind, text: page.text }
+            : { page: i + 1, field, kind, assetId: page.assetId! },
+        );
     }
   });
   for (const field of Object.keys(template.dataset ?? {}))
-    if (!used.has(field))
-      errors.push({
-        code: "unmapped",
-        message: `Dataset field ${field} is unassigned. Map it or use a compatible design.`,
+    if (!usage.has(field))
+      skipped.push({
+        field,
+        populated: false,
+        reason: "No book-page mapping; source-template content is retained.",
       });
-  return { errors, warnings };
+  return { fields, skipped };
 }
 export function validateBook(
   book: Book,
@@ -71,69 +182,130 @@ export function validateBook(
   assets: Asset[],
   connected: boolean,
   dpi: number,
+  unavailableAssetIds: string[] = [],
 ): Validation {
-  const result: Validation = { errors: [], warnings: [] };
+  const result: Validation = {
+    errors: [],
+    warnings: [],
+    details: [],
+    skipped: [],
+    submission: { textFields: 0, imageFields: 0 },
+  };
   if (!connected)
     result.errors.push({
       code: "connection",
       message: "Connect Canva in Settings.",
-    });
-  if (book.status === "archived")
-    result.errors.push({
-      code: "archived",
-      message: "Restore this archived book before publishing.",
     });
   if (!template)
     result.errors.push({
       code: "template",
       message: "Select a registered Canva template.",
     });
-  else
-    result.errors.push(...validateTemplate(template, book.pages.length).errors);
-  book.pages.forEach((page, index) => {
-    const n = index + 1,
+  else {
+    const mapping = validateTemplate(template, book.pages.length);
+    result.errors.push(...mapping.errors);
+    result.warnings.push(...mapping.warnings);
+    result.details!.push(...(mapping.details ?? []));
+    const plan = planAutofill(book, template, assets, unavailableAssetIds);
+    result.skipped = plan.skipped;
+    result.submission = {
+      textFields: plan.fields.filter((f) => f.kind === "text").length,
+      imageFields: plan.fields.filter((f) => f.kind === "image").length,
+    };
+    if (!mapping.errors.length && !plan.fields.length)
+      result.errors.push({
+        code: "no_data",
+        message:
+          "No supported, populated fields can be submitted. Assign text or artwork to at least one compatible Canva field, then retry.",
+      });
+    const unavailable = plan.skipped.filter(
+      (f) =>
+        f.kind === "image" &&
+        f.populated &&
+        !["field_type", "missing_field", "duplicate"].some((code) =>
+          mapping.details?.some(
+            (issue) =>
+              issue.page === f.page &&
+              issue.code === code &&
+              issue.message === f.reason,
+          ),
+        ),
+    );
+    if (unavailable.length)
+      result.warnings.push({
+        code: "unavailable_image",
+        message: `${unavailable.length} assigned ${unavailable.length === 1 ? "illustration cannot" : "illustrations cannot"} be submitted because the file or format is unavailable. See skipped fields; compatible text and artwork can still be generated.`,
+      });
+  }
+  const blankText: number[] = [],
+    blankImages: number[] = [],
+    low: { page: number; dpi: number }[] = [],
+    long: number[] = [],
+    aspect: number[] = [];
+  book.pages.forEach((page, i) => {
+    const n = i + 1,
       asset = assets.find((a) => a.id === page.assetId);
-    if (!page.text.trim())
-      result.errors.push({
-        code: "text",
-        page: n,
-        message: `Page ${n}: add manuscript text.`,
-      });
-    if (!asset)
-      result.errors.push({
-        code: "image",
-        page: n,
-        message: `Page ${n}: assign an illustration.`,
-      });
-    else {
-      if (!["image/png", "image/jpeg", "image/webp"].includes(asset.mime))
-        result.errors.push({
-          code: "format",
-          page: n,
-          message: `Page ${n}: unsupported image format.`,
-        });
+    if (!page.text.trim()) blankText.push(n);
+    if (!page.assetId) blankImages.push(n);
+    if (asset) {
       const actual =
         page.placement === "cover"
           ? Math.min(asset.width / book.width, asset.height / book.height)
           : Math.max(asset.width / book.width, asset.height / book.height);
-      if (actual < dpi)
-        result.errors.push({
+      if (actual < dpi) {
+        low.push({ page: n, dpi: Math.floor(actual) });
+        result.details!.push({
           code: "resolution",
           page: n,
-          message: `Page ${n}: artwork provides ${Math.floor(actual)} DPI; target is ${dpi}. Upload larger artwork or adjust the target in Settings.`,
+          message: `Page ${n}: ${Math.floor(actual)} DPI; print target ${dpi} DPI.`,
         });
+      }
+      if (
+        Math.abs(asset.width / asset.height / (book.width / book.height) - 1) >
+        0.1
+      )
+        aspect.push(n);
     }
-    if (page.text.trim().split(/\s+/).length > 65)
-      result.warnings.push({
-        code: "length",
-        page: n,
-        message: `Page ${n}: long copy may overflow. Check the text in Canva.`,
-      });
+    if (page.text.trim().split(/\s+/).length > 65) long.push(n);
   });
+  if (blankText.length)
+    result.warnings.push({
+      code: "text",
+      message: `${blankText.length} ${blankText.length === 1 ? "page has" : "pages have"} no manuscript text (${pageRanges(blankText)}).`,
+    });
+  if (blankImages.length)
+    result.warnings.push({
+      code: "image",
+      message: `${blankImages.length} ${blankImages.length === 1 ? "page has" : "pages have"} no illustration (${pageRanges(blankImages)}). Template artwork may remain.`,
+    });
+  if (low.length) {
+    const min = Math.min(...low.map((p) => p.dpi)),
+      max = Math.max(...low.map((p) => p.dpi));
+    result.warnings.push({
+      code: "resolution",
+      message: `${low.length} ${low.length === 1 ? "illustration is" : "illustrations are"} below the ${dpi} DPI print target (${min === max ? min : `${min}–${max}`} DPI). Review before final print export.`,
+    });
+  }
+  if (long.length)
+    result.warnings.push({
+      code: "length",
+      message: `${long.length} ${long.length === 1 ? "page has" : "pages have"} long copy that may overflow (${pageRanges(long)}). Review text in Canva.`,
+    });
+  if (aspect.length)
+    result.warnings.push({
+      code: "aspect",
+      message: `${aspect.length} illustrations have a different aspect ratio from the page (${pageRanges(aspect)}). Review cropping in Canva.`,
+    });
+  if (book.status === "archived")
+    result.warnings.push({
+      code: "archived",
+      message:
+        "This book is archived. The draft uses its currently saved content.",
+    });
   result.warnings.push({
     code: "preview",
     message:
-      "Local overlay controls are preview only. Canva’s template controls typography, crop, bubbles and safe margins; inspect the generated draft before print.",
+      "Local layout controls are preview only. Review the generated copy in Canva; skipped fields retain source-template content, including placeholder text or old artwork.",
   });
   return result;
 }
@@ -141,22 +313,40 @@ export function buildAutofill(
   book: Book,
   template: Template,
   uploaded: Record<string, string>,
+  fields = planAutofill(book, template).fields,
 ) {
+  if (!template.dataset || !template.checkedAt || template.error)
+    throw new Error(
+      template.error || "Inspect the live Canva dataset before generating.",
+    );
   const data: Record<
     string,
     { type: "text"; text: string } | { type: "image"; asset_id: string }
-  > = {};
-  const validation = validateTemplate(template, book.pages.length);
-  if (validation.errors.length) throw new Error(validation.errors[0].message);
-  book.pages.forEach((page, i) => {
-    if (!page.assetId || !uploaded[page.assetId] || !page.text.trim())
-      throw new Error(`Page ${i + 1} is incomplete.`);
-    data[template.mapping[i].image] = {
-      type: "image",
-      asset_id: uploaded[page.assetId],
-    };
-    data[template.mapping[i].text] = { type: "text", text: page.text };
-  });
+  > = Object.create(null);
+  for (const field of fields) {
+    // A persisted plan is checked again at construction; never coerce a field type.
+    if (
+      template.dataset[field.field]?.type !== field.kind ||
+      Object.hasOwn(data, field.field)
+    )
+      throw new Error(
+        `The submission plan for ${field.field} is incompatible. Validate again.`,
+      );
+    if (field.kind === "text") {
+      if (field.text.trim())
+        data[field.field] = { type: "text", text: field.text };
+    } else {
+      if (!uploaded[field.assetId])
+        throw new Error(
+          `Canva has not confirmed the illustration upload for ${field.field}. Retry the upload before generating.`,
+        );
+      data[field.field] = { type: "image", asset_id: uploaded[field.assetId] };
+    }
+  }
+  if (!Object.keys(data).length)
+    throw new Error(
+      "No supported, populated Autofill fields are available. Add compatible content and validate again.",
+    );
   return {
     type: "create_from_design" as const,
     design_id: template.id,
@@ -164,6 +354,7 @@ export function buildAutofill(
     data,
   };
 }
+
 // Paragraph boundaries are preserved. Explicit --- separators give authors full control.
 export function distributeManuscript(
   text: string,

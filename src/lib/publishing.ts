@@ -19,7 +19,7 @@ import {
   saveJob,
 } from "./repository";
 import { storage } from "./storage";
-import { buildAutofill, validateBook } from "./validation";
+import { buildAutofill, planAutofill, validateBook } from "./validation";
 import type {
   Asset,
   JobSummary,
@@ -36,36 +36,54 @@ export function jobSummary(job: PublishJob): JobSummary {
 }
 export async function publishingValidation(bookId: string, live = false) {
   const book = bookById(bookId);
-  if (live && book.templateId && connection().connected)
-    await inspectTemplate(book.templateId);
+  let inspectionError: string | undefined;
+  if (live && book.templateId && connection().connected) {
+    try {
+      await inspectTemplate(book.templateId);
+    } catch (error) {
+      inspectionError =
+        error instanceof Error
+          ? error.message
+          : "Canva source inspection failed. Check the connection and retry validation.";
+    }
+  }
   const assets = list<Asset>("assets");
+  const unavailable = await unavailableAssets(
+    assets.filter((a) => book.pages.some((p) => p.assetId === a.id)),
+  );
   const result = validateBook(
     book,
     book.templateId ? get<Template>("templates", book.templateId) : undefined,
     assets,
     connection().connected,
     preferences().dpi,
+    unavailable,
   );
-  for (const asset of assets.filter((a) =>
-    book.pages.some((p) => p.assetId === a.id),
-  )) {
+  if (
+    inspectionError &&
+    !result.errors.some((issue) => issue.message === inspectionError)
+  )
+    result.errors.push({ code: "canva", message: inspectionError });
+  return result;
+}
+async function unavailableAssets(assets: Asset[]) {
+  const unavailable: string[] = [];
+  for (const asset of assets) {
     try {
       const file = await stat(assetPath(asset.filename));
       if (!file.isFile() || file.size !== asset.size)
         throw new Error("File changed");
     } catch {
-      result.errors.push({
-        code: "file",
-        message: `Illustration “${asset.name}” is missing or changed on disk. Replace it in the Asset Library.`,
-      });
+      unavailable.push(asset.id);
     }
   }
-  return result;
+  return unavailable;
 }
 export async function startPublishing(bookId: string) {
   const validation = await publishingValidation(bookId, true);
   if (validation.errors.length)
     throw new AppError(validation.errors[0].message, 422);
+  const unavailable = await unavailableAssets(list<Asset>("assets"));
   // Capture one immutable, validated revision after external awaits.
   return storage().transaction(() => {
     const book = bookById(bookId),
@@ -79,9 +97,14 @@ export async function startPublishing(bookId: string) {
       assets,
       connection().connected,
       preferences().dpi,
+      unavailable,
     );
     if (checked.errors.length)
       throw new AppError(checked.errors[0].message, 422);
+    const fields = planAutofill(book, template, assets, unavailable).fields;
+    const uploads = assets.filter((a) =>
+      fields.some((f) => f.kind === "image" && f.assetId === a.id),
+    );
     if (
       list<PublishJob>("publishing_jobs").some(
         (j) => !["success", "failed"].includes(j.status),
@@ -103,7 +126,14 @@ export async function startPublishing(bookId: string) {
       updatedAt: now(),
       nextAt: 0,
       attempts: 0,
-      snapshot: { book, template, assets, dpi: preferences().dpi },
+      snapshot: {
+        book,
+        template,
+        assets: uploads,
+        dpi: preferences().dpi,
+        fields,
+      },
+      validation: checked,
       uploaded: {},
     };
     saveJob(job);
@@ -194,6 +224,7 @@ export async function advanceJob(id: string) {
           job.snapshot.book,
           job.snapshot.template,
           job.uploaded,
+          job.snapshot.fields,
         );
         job.status = "generating";
         job.remoteId = "uncertain";
@@ -237,9 +268,12 @@ export async function advanceJob(id: string) {
         const meta = await canva<{
           design: { page_count?: number; urls?: { edit_url?: string } };
         }>(`/designs/${encodeURIComponent(design.id)}`);
-        if (meta.design.page_count !== job.snapshot.book.pages.length)
+        if (
+          job.snapshot.template.pageCount !== null &&
+          meta.design.page_count !== job.snapshot.template.pageCount
+        )
           throw new AppError(
-            `Generated design page count did not match ${job.snapshot.book.pages.length}. Inspect design ${design.id} in Canva.`,
+            `Generated design page count did not match the ${job.snapshot.template.pageCount}-page source. Inspect design ${design.id} in Canva.`,
             502,
           );
         job.designUrl = meta.design.urls?.edit_url || job.designUrl;
@@ -272,7 +306,7 @@ export async function advanceJob(id: string) {
     saveJob(job);
   } catch (e) {
     const message =
-      e instanceof AppError
+      e instanceof Error
         ? e.message
         : "Publishing could not continue. Check the local files and Canva connection.";
     // Only retry safe GET stages; never repeat a creation with an uncertain result.

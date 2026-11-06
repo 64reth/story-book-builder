@@ -258,13 +258,15 @@ export async function canva<T>(
     const guidance =
       response.status === 401
         ? "Reconnect Canva in Settings."
-        : response.status === 403
-          ? "Check the app scopes, Canva plan and access to this design."
-          : response.status === 404
-            ? "Check the design or job ID and account access."
-            : response.status === 429
-              ? "Canva rate limit reached. Wait before retrying."
-              : "Check Canva service availability and retry.";
+        : response.status === 400
+          ? "Canva rejected the request data. Check the current dataset types and uploaded asset IDs, then validate and retry. If omitted fields are refused for this design, finish a copied draft manually in Canva."
+          : response.status === 403
+            ? "Check the app scopes, Canva plan and access to this design."
+            : response.status === 404
+              ? "Check the design or job ID and account access."
+              : response.status === 429
+                ? "Canva rate limit reached. Wait before retrying."
+                : "Check Canva service availability and retry.";
     // Do not relay provider bodies: they may echo request data or credentials.
     throw new CanvaError(
       `Canva returned ${response.status}. ${guidance}`,

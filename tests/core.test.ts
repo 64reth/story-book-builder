@@ -51,7 +51,11 @@ import {
   validateBook,
   validateTemplate,
 } from "../src/lib/validation";
-import { advanceJob, publishingValidation, startPublishing } from "../src/lib/publishing";
+import {
+  advanceJob,
+  publishingValidation,
+  startPublishing,
+} from "../src/lib/publishing";
 import { bookEdit, preferencesSchema } from "../src/lib/schema";
 import type { Asset, PublishJob, Template } from "../src/lib/types";
 const testRoot = mkdtempSync(path.join(os.tmpdir(), "storybook-core-"));
@@ -246,7 +250,7 @@ test("API errors explain 401/403/404/429/5xx without echoing provider secrets", 
     globalThis.fetch = originalFetch;
   }
 });
-test("template validation rejects missing, duplicate, extra and incompatible fields", () => {
+test("template validation advises on mapping gaps and only blocks inaccessible datasets", () => {
   const template: Template = {
     id: "template-test",
     name: "Test",
@@ -263,7 +267,9 @@ test("template validation rejects missing, duplicate, extra and incompatible fie
   };
   assert.equal(validateTemplate(template).errors.length, 0);
   assert.ok(
-    validateTemplate(template, 33).errors.some((e) => e.code === "page_count"),
+    validateTemplate(template, 33).warnings.some(
+      (e) => e.code === "page_count",
+    ),
   );
   assert.ok(
     validateTemplate({ ...template, dataset: null }).errors.some(
@@ -274,10 +280,11 @@ test("template validation rejects missing, duplicate, extra and incompatible fie
   bad.mapping[1].image = bad.mapping[0].image;
   bad.dataset![bad.mapping[0].text].type = "chart";
   bad.dataset!.EXTRA = { type: "text" };
-  const errors = validateTemplate(bad).errors;
-  assert.ok(errors.some((e) => e.code === "duplicate"));
-  assert.ok(errors.some((e) => e.code === "field_type"));
-  assert.ok(errors.some((e) => e.code === "unmapped"));
+  const result = validateTemplate(bad);
+  assert.equal(result.errors.length, 0);
+  assert.ok(result.warnings.some((e) => e.code === "duplicate"));
+  assert.ok(result.warnings.some((e) => e.code === "field_type"));
+  assert.ok(result.warnings.some((e) => e.code === "unmapped"));
 });
 test("manuscript import respects explicit page breaks and whole paragraphs", () => {
   assert.deepEqual(distributeManuscript("One\n---\nTwo", 3, "manual"), [
@@ -356,13 +363,13 @@ test("uploads validate decoded formats, reject traversal and protect referenced 
   assert.notEqual(replacement.filename, asset.filename);
   assert.ok(readFileSync(assetPath(asset.filename)).length);
 });
-test("publishing readiness separates warnings and blocks insufficient resolution", () => {
+test("publishing readiness keeps creative issues advisory", () => {
   const book = createBook("Readiness", "", 24),
     asset = list<Asset>("assets")[0];
   const result = validateBook(book, undefined, [], false, 300);
   assert.ok(result.errors.some((e) => e.code === "connection"));
-  assert.ok(result.errors.some((e) => e.code === "image"));
-  assert.ok(result.errors.some((e) => e.code === "text"));
+  assert.ok(result.warnings.some((e) => e.code === "image"));
+  assert.ok(result.warnings.some((e) => e.code === "text"));
   assert.ok(result.warnings.length);
   book.pages = book.pages.map((p) => ({
     ...p,
@@ -370,7 +377,7 @@ test("publishing readiness separates warnings and blocks insufficient resolution
     assetId: asset.id,
   }));
   assert.ok(
-    validateBook(book, undefined, [asset], true, 600).errors.some(
+    validateBook(book, undefined, [asset], true, 600).warnings.some(
       (e) => e.code === "resolution",
     ),
   );
@@ -566,11 +573,17 @@ test("interrupted POST is not replayed, and failed remote jobs never report succ
 test("preflight detects illustration files changed outside the application", async () => {
   const asset = list<Asset>("assets")[0];
   const book = createBook("File integrity", "", 24);
-  saveBook({ ...book, pages: book.pages.map(p => ({ ...p, text: "Copy", assetId: asset.id })) });
-  const filename = assetPath(asset.filename), original = readFileSync(filename);
+  saveBook({
+    ...book,
+    pages: book.pages.map((p) => ({ ...p, text: "Copy", assetId: asset.id })),
+  });
+  const filename = assetPath(asset.filename),
+    original = readFileSync(filename);
   try {
     writeFileSync(filename, "changed outside app");
     const result = await publishingValidation(book.id);
-    assert.ok(result.errors.some(e => e.code === "file"));
-  } finally { writeFileSync(filename, original); }
+    assert.ok(result.warnings.some((e) => e.code === "unavailable_image"));
+  } finally {
+    writeFileSync(filename, original);
+  }
 });

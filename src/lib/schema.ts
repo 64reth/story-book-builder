@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { Workspace } from "./types";
+import type { Validation, Workspace } from "./types";
 export const preferencesSchema = z
   .object({
     width: z.number().min(1).max(30),
@@ -65,6 +65,30 @@ export const mappingSchema = z
   .array(z.object({ image: z.string().max(255), text: z.string().max(255) }))
   .max(100);
 
+const issueSchema = z.object({
+  code: z.string(),
+  message: z.string(),
+  page: z.number().optional(),
+});
+export const validationSchema: z.ZodType<Validation> = z.object({
+  errors: z.array(issueSchema),
+  warnings: z.array(issueSchema),
+  details: z.array(issueSchema).optional(),
+  skipped: z
+    .array(
+      z.object({
+        page: z.number().optional(),
+        field: z.string(),
+        kind: z.enum(["text", "image"]).optional(),
+        reason: z.string(),
+        populated: z.boolean(),
+      }),
+    )
+    .optional(),
+  submission: z
+    .object({ textFields: z.number(), imageFields: z.number() })
+    .optional(),
+});
 // Validate startup data before it is committed to the client tree.
 export const workspaceResponseSchema: z.ZodType<Workspace> = z.object({
   books: z.array(
@@ -118,6 +142,7 @@ export const workspaceResponseSchema: z.ZodType<Workspace> = z.object({
       remoteId: z.string().optional(),
       designId: z.string().optional(),
       designUrl: z.string().optional(),
+      validation: validationSchema.optional(),
     }),
   ),
   preferences: preferencesSchema,

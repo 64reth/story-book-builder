@@ -103,13 +103,19 @@ export function Issues({ value }: { value: Validation }) {
       {!value.errors.length && (
         <div className="notice success">
           <CheckCircle2 size={18} />
-          <span>No blocking errors. Ready to generate a Canva draft.</span>
+          <span>
+            {value.submission
+              ? "Draft generation available."
+              : "Dataset accessible. Compatible fields can be used when populated."}{" "}
+            {value.submission &&
+              `${value.submission.textFields} text fields and ${value.submission.imageFields} image fields will be submitted.`}
+          </span>
         </div>
       )}
       {!!value.errors.length && (
         <h3>
-          {value.errors.length} blocking{" "}
-          {value.errors.length === 1 ? "error" : "errors"}
+          {value.errors.length} technical{" "}
+          {value.errors.length === 1 ? "issue" : "issues"} to resolve
         </h3>
       )}
       {value.errors.map((issue, i) => (
@@ -118,13 +124,54 @@ export function Issues({ value }: { value: Validation }) {
           <span>{issue.message}</span>
         </div>
       ))}
-      {!!value.warnings.length && <h3>Warnings & review notes</h3>}
+      {!!value.warnings.length && (
+        <h3>
+          {value.warnings.length}{" "}
+          {value.warnings.length === 1 ? "advisory" : "advisories"}
+        </h3>
+      )}
       {value.warnings.map((issue, i) => (
         <div className="issue warning" key={i}>
           <AlertCircle size={16} />
           <span>{issue.message}</span>
         </div>
       ))}
+      {!!value.skipped?.length && (
+        <details className="validation-details">
+          <summary>Skipped fields ({value.skipped.length})</summary>
+          <p className="form-note">
+            Only supported, populated fields are submitted. Omitted fields keep
+            source-template defaults, so placeholder copy or old artwork may
+            remain in the new design.
+          </p>
+          <div className="skipped-fields">
+            {value.skipped.map((field, i) => (
+              <div className="issue" key={i}>
+                <div>
+                  <strong>
+                    {field.page ? `Page ${field.page} · ` : ""}
+                    {field.field || `Unassigned ${field.kind} field`}
+                  </strong>
+                  {field.populated && (
+                    <Badge tone="red">Populated content skipped</Badge>
+                  )}
+                  <p>{field.reason}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+      {!!value.details?.length && (
+        <details className="validation-details">
+          <summary>Page diagnostics ({value.details.length})</summary>
+          {value.details.map((issue, i) => (
+            <div className="issue" key={i}>
+              {issue.message}
+            </div>
+          ))}
+        </details>
+      )}
     </div>
   );
 }

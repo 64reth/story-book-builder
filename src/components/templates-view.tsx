@@ -222,7 +222,7 @@ function MappingEditor({
           className={tab === "validation" ? "active" : ""}
           onClick={() => setTab("validation")}
         >
-          Validation ({result.errors.length})
+          Validation ({result.errors.length + result.warnings.length})
         </button>
       </div>
       {tab === "mapping" ? (
@@ -267,7 +267,8 @@ function MappingEditor({
           </div>
           <div className="form-actions">
             <span className={result.errors.length ? "error" : "muted"}>
-              {result.errors.length} mapping errors
+              {result.errors.length} technical issues · {result.warnings.length}{" "}
+              mapping advisories
             </span>
             <button
               className="primary"

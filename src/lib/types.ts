@@ -55,7 +55,23 @@ export type Preferences = {
   theme: "light" | "dark";
 };
 export type Issue = { code: string; message: string; page?: number };
-export type Validation = { errors: Issue[]; warnings: Issue[] };
+export type SkippedField = {
+  page?: number;
+  field: string;
+  kind?: "image" | "text";
+  reason: string;
+  populated: boolean;
+};
+export type AutofillField = { page: number; field: string } & (
+  { kind: "text"; text: string } | { kind: "image"; assetId: string }
+);
+export type Validation = {
+  errors: Issue[];
+  warnings: Issue[];
+  details?: Issue[];
+  skipped?: SkippedField[];
+  submission?: { textFields: number; imageFields: number };
+};
 export type RemoteJob = {
   id: string;
   status: "in_progress" | "success" | "failed";
@@ -82,7 +98,14 @@ export type PublishJob = {
   updatedAt: string;
   nextAt: number;
   attempts: number;
-  snapshot: { book: Book; template: Template; assets: Asset[]; dpi: number };
+  snapshot: {
+    book: Book;
+    template: Template;
+    assets: Asset[];
+    dpi: number;
+    fields?: AutofillField[];
+  };
+  validation?: Validation;
   uploaded: Record<string, string>;
   pendingUpload?: { assetId: string; remoteId: string };
   remoteId?: string;

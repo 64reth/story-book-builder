@@ -963,6 +963,31 @@ nav {
   overflow: auto;
   padding-right: 4px;
 }
+.validation-details {
+  margin-top: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+  font-size: 12px;
+}
+.validation-details > summary {
+  cursor: pointer;
+  min-height: 44px;
+  display: list-item;
+  align-content: center;
+  font-weight: 600;
+  color: var(--accent);
+}
+.skipped-fields {
+  max-height: 350px;
+  overflow: auto;
+}
+.skipped-fields .badge {
+  margin-left: 8px;
+}
+.skipped-fields p {
+  font-size: 11px;
+  margin-top: 6px;
+}
 .upload-drop {
   display: flex;
   align-items: center;
