@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS books (id TEXT PRIMARY KEY, document TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS pages (id TEXT PRIMARY KEY, book_id TEXT NOT NULL REFERENCES books(id) ON DELETE CASCADE, position INTEGER NOT NULL, document TEXT NOT NULL, UNIQUE(book_id, position));
+CREATE TABLE IF NOT EXISTS assets (id TEXT PRIMARY KEY, document TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS templates (id TEXT PRIMARY KEY, document TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS publishing_jobs (id TEXT PRIMARY KEY, book_id TEXT NOT NULL REFERENCES books(id), document TEXT NOT NULL, lease_until INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS generated_designs (id TEXT PRIMARY KEY, job_id TEXT NOT NULL REFERENCES publishing_jobs(id), book_id TEXT NOT NULL REFERENCES books(id), document TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS versions (id TEXT PRIMARY KEY, book_id TEXT NOT NULL REFERENCES books(id), created_at TEXT NOT NULL, document TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS settings (id TEXT PRIMARY KEY, document TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS credentials (id TEXT PRIMARY KEY, encrypted TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS oauth_states (id TEXT PRIMARY KEY, owner_hash TEXT NOT NULL, encrypted TEXT NOT NULL, expires_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS versions_book ON versions(book_id, created_at);
+CREATE INDEX IF NOT EXISTS jobs_book ON publishing_jobs(book_id);
