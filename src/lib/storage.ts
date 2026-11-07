@@ -1,58 +1,88 @@
-import Database from "better-sqlite3";
-import { mkdirSync, readFileSync } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
-
+import { backend } from "@/lib/platform";
+import { AppError } from "./errors";
+type Param = string | number | null;
+type Command = { sql: string; params: Param[] };
+export interface Backend {
+  get<T>(sql: string, params: Param[]): T | undefined | Promise<T | undefined>;
+  all<T>(sql: string, params: Param[]): T[] | Promise<T[]>;
+  batch(
+    commands: Command[],
+  ): { changes: number }[] | Promise<{ changes: number }[]>;
+}
 export interface Storage {
-  get<T>(sql: string, ...params: (string | number | null)[]): T | undefined;
-  all<T>(sql: string, ...params: (string | number | null)[]): T[];
-  run(sql: string, ...params: (string | number | null)[]): { changes: number };
-  transaction<T>(fn: () => T): T;
+  get<T>(sql: string, ...params: Param[]): Promise<T | undefined>;
+  all<T>(sql: string, ...params: Param[]): Promise<T[]>;
+  run(sql: string, ...params: Param[]): Promise<{ changes: number }>;
+  transaction<T>(fn: () => T | Promise<T>): Promise<T>;
 }
 export const dataRoot = () =>
   path.resolve(
-    /* turbopackIgnore: true */ process.env.STORYBOOK_DATA_DIR ||
-      path.join(process.cwd(), "data"),
+    process.env.STORYBOOK_DATA_DIR || path.join(process.cwd(), "data"),
   );
 export const uploadRoot = () => path.join(dataRoot(), "uploads");
-class SQLiteStorage implements Storage {
-  private db: Database.Database;
-  constructor() {
-    mkdirSync(uploadRoot(), { recursive: true });
-    this.db = new Database(path.join(dataRoot(), "storybook.sqlite"));
-    this.db.pragma("journal_mode = WAL");
-    this.db.pragma("foreign_keys = ON");
-    this.db.pragma("busy_timeout = 5000");
-    this.db.exec(
-      "CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL)",
-    );
-    if (!this.db.prepare("SELECT id FROM migrations WHERE id = ?").get("001")) {
-      this.db.transaction(() => {
-        this.db.exec(
-          readFileSync(
-            path.join(process.cwd(), "migrations", "001-foundation.sql"),
-            "utf8",
-          ),
-        );
-        this.db
-          .prepare("INSERT INTO migrations VALUES (?, ?)")
-          .run("001", new Date().toISOString());
-      })();
+class PortableStorage implements Storage {
+  private backend = backend();
+  private unit = new AsyncLocalStorage<{
+    version: number;
+    commands: Command[];
+  }>();
+  async get<T>(sql: string, ...params: Param[]) {
+    return (await this.backend).get<T>(sql, params);
+  }
+  async all<T>(sql: string, ...params: Param[]) {
+    return (await this.backend).all<T>(sql, params);
+  }
+  async run(sql: string, ...params: Param[]) {
+    const unit = this.unit.getStore();
+    if (unit) {
+      unit.commands.push({ sql, params });
+      return { changes: 1 };
     }
+    return (
+      await (
+        await this.backend
+      ).batch([
+        {
+          sql: "UPDATE app_revision SET expected=value, value=value+1 WHERE id=1",
+          params: [],
+        },
+        { sql, params },
+      ])
+    )[1];
   }
-  get<T>(sql: string, ...params: (string | number | null)[]) {
-    return this.db.prepare(sql).get(...params) as T | undefined;
-  }
-  all<T>(sql: string, ...params: (string | number | null)[]) {
-    return this.db.prepare(sql).all(...params) as T[];
-  }
-  run(sql: string, ...params: (string | number | null)[]) {
-    return this.db.prepare(sql).run(...params);
-  }
-  transaction<T>(fn: () => T) {
-    return this.db.transaction(fn).immediate();
+  async transaction<T>(fn: () => T | Promise<T>): Promise<T> {
+    if (this.unit.getStore()) return fn();
+    const db = await this.backend;
+    const version = (await db.get<{ value: number }>(
+      "SELECT value FROM app_revision WHERE id=1",
+      [],
+    ))!.value;
+    const unit = { version, commands: [] as Command[] };
+    const result = await this.unit.run(unit, fn);
+    if (unit.commands.length) {
+      try {
+        await db.batch([
+          {
+            sql: "UPDATE app_revision SET expected=?, value=value+1 WHERE id=1",
+            params: [version],
+          },
+          ...unit.commands,
+        ]);
+      } catch (e) {
+        if ((e as Error).message.includes("Workspace changed concurrently"))
+          throw new AppError(
+            "Workspace changed concurrently. Retry the operation.",
+            409,
+          );
+        throw e;
+      }
+    }
+    return result;
   }
 }
-const globalStore = globalThis as unknown as { storybookStorage?: Storage };
+const runtime = globalThis as unknown as { storybookAsyncStorage?: Storage };
 export function storage(): Storage {
-  return (globalStore.storybookStorage ??= new SQLiteStorage());
+  return (runtime.storybookAsyncStorage ??= new PortableStorage());
 }

@@ -29,8 +29,8 @@ export function fieldManifest(fields: AutofillField[], assets: Asset[]) {
     ]),
   );
 }
-export function draftCandidates(bookId: string) {
-  return list<PublishJob>("publishing_jobs")
+export async function draftCandidates(bookId: string) {
+  return (await list<PublishJob>("publishing_jobs"))
     .filter(
       (j) =>
         j.bookId === bookId &&
@@ -49,14 +49,17 @@ export function draftCandidates(bookId: string) {
       publishedAt: j.completedAt ?? j.updatedAt,
     }));
 }
-export function activeDraft(bookId: string) {
-  return get<{ designId: string }>("settings", `active-draft:${bookId}`)
-    ?.designId;
+export async function activeDraft(bookId: string) {
+  return (
+    await get<{
+      designId: string;
+    }>("settings", `active-draft:${bookId}`)
+  )?.designId;
 }
 export async function inspectDestination(bookId: string, designId: string) {
   if (
     designId === MASTER ||
-    !draftCandidates(bookId).some((d) => d.designId === designId)
+    !(await draftCandidates(bookId)).some((d) => d.designId === designId)
   )
     throw new AppError(
       "Select a confirmed generated draft associated with this book. The protected master cannot be refined.",
@@ -64,12 +67,23 @@ export async function inspectDestination(bookId: string, designId: string) {
     );
   const [meta, user, dataset] = await Promise.all([
     canva<{
-      design: { id: string; owner?: { user_id: string; team_id: string } };
+      design: {
+        id: string;
+        owner?: {
+          user_id: string;
+          team_id: string;
+        };
+      };
     }>(`/designs/${encodeURIComponent(designId)}`),
-    canva<{ team_user: { user_id: string; team_id: string } }>("/users/me"),
-    canva<{ dataset: Dataset }>(
-      `/designs/${encodeURIComponent(designId)}/dataset`,
-    ),
+    canva<{
+      team_user: {
+        user_id: string;
+        team_id: string;
+      };
+    }>("/users/me"),
+    canva<{
+      dataset: Dataset;
+    }>(`/designs/${encodeURIComponent(designId)}/dataset`),
   ]);
   if (
     meta.design?.id !== designId ||
@@ -94,23 +108,23 @@ export async function inspectDestination(bookId: string, designId: string) {
 }
 export async function selectDraft(bookId: string, designId: string) {
   await inspectDestination(bookId, designId);
-  put("settings", `active-draft:${bookId}`, { designId });
+  await put("settings", `active-draft:${bookId}`, { designId });
   return { designId };
 }
 export async function refinementPlan(bookId: string) {
-  const book = bookById(bookId),
-    designId = activeDraft(bookId);
+  const book = await bookById(bookId),
+    designId = await activeDraft(bookId);
   if (!designId)
     throw new AppError(
       "Select an active generated Canva draft first. Existing copies are never selected automatically.",
       422,
     );
   const dataset = await inspectDestination(bookId, designId);
-  const source = get<Template>("templates", book.templateId ?? "");
+  const source = await get<Template>("templates", book.templateId ?? "");
   if (!source) throw new AppError("Select the source template first.", 422);
-  const assets = list<Asset>("assets");
+  const assets = await list<Asset>("assets");
   const plan = planAutofill(book, source, assets);
-  const previous = list<PublishJob>("publishing_jobs")
+  const previous = (await list<PublishJob>("publishing_jobs"))
     .filter(
       (j) =>
         j.bookId === bookId &&

@@ -9,7 +9,7 @@ export async function GET(request: Request) {
   try {
     const owner = requireOwner(request),
       params = new URL(request.url).searchParams;
-    const verifier = consumeOAuthState(params.get("state") || "", owner);
+    const verifier = await consumeOAuthState(params.get("state") || "", owner);
     if (params.has("error"))
       throw new AppError(
         "Canva authorization was declined. You can connect again when ready.",

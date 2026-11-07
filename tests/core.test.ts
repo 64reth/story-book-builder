@@ -72,37 +72,40 @@ const json = (value: unknown, status = 200) =>
     status,
     headers: { "Content-Type": "application/json" },
   });
-before(() => initialize());
-test("migration and initial project persist without fabricated content", () => {
-  assert.equal(storage().all("SELECT id FROM migrations").length, 1);
-  assert.equal(books()[0].pages.length, 33);
-  assert.ok(books()[0].pages.every((p) => !p.text && !p.assetId));
-  assert.equal(list<Template>("templates")[0].dataset, null);
-  initialize();
-  assert.equal(books().length, 1);
+before(async () => await initialize());
+test("migration and initial project persist without fabricated content", async () => {
+  assert.equal((await storage().all("SELECT id FROM migrations")).length, 3);
+  assert.equal((await books())[0].pages.length, 33);
+  assert.ok((await books())[0].pages.every((p) => !p.text && !p.assetId));
+  assert.equal((await list<Template>("templates"))[0].dataset, null);
+  await initialize();
+  assert.equal((await books()).length, 1);
 });
-test("books: create, edit, reorder, duplicate, archive and conflict protection", () => {
-  const book = createBook("Test book", "Author", 24),
+test("books: create, edit, reorder, duplicate, archive and conflict protection", async () => {
+  const book = await createBook("Test book", "Author", 24),
     first = book.pages[0].id;
   book.pages.reverse();
   book.pages[0].text = "A beginning.";
-  const saved = saveBook(book);
+  const saved = await saveBook(book);
   assert.equal(saved.pages.at(-1)?.id, first);
-  assert.equal(bookById(book.id).pages[0].text, "A beginning.");
-  assert.throws(() => saveBook(book), /another tab/);
-  const copy = duplicateBook(book.id);
+  assert.equal((await bookById(book.id)).pages[0].text, "A beginning.");
+  await assert.rejects(async () => await saveBook(book), /another tab/);
+  const copy = await duplicateBook(book.id);
   assert.equal(copy.pages[0].text, "A beginning.");
   assert.notEqual(copy.pages[0].id, saved.pages[0].id);
-  assert.equal(saveBook({ ...copy, status: "archived" }).status, "archived");
+  assert.equal(
+    (await saveBook({ ...copy, status: "archived" })).status,
+    "archived",
+  );
 });
-test("draft checkpoints preserve the previous manuscript", () => {
-  const book = createBook("Version test", "", 28);
-  checkpoint(book.id);
-  saveBook({
+test("draft checkpoints preserve the previous manuscript", async () => {
+  const book = await createBook("Version test", "", 28);
+  await checkpoint(book.id);
+  await saveBook({
     ...book,
     pages: book.pages.map((p) => ({ ...p, text: "Revised" })),
   });
-  assert.equal(versions(book.id)[0].book.pages[0].text, "");
+  assert.equal((await versions(book.id))[0].book.pages[0].text, "");
 });
 test("database content survives a separate process and module restart", () => {
   const script = path.join(process.cwd(), "tests", "persistence.mts");
@@ -181,22 +184,31 @@ test("owner sessions, origin checks and DNS rebinding protection", () => {
     /session expired/,
   );
 });
-test("OAuth state is bound to the initiating owner, expires and cannot be replayed", () => {
+test("OAuth state is bound to the initiating owner, expires and cannot be replayed", async () => {
   const owner = makeOwner(),
-    url = new URL(startOAuth(owner)),
+    url = new URL(await startOAuth(owner)),
     state = url.searchParams.get("state")!;
   assert.equal(url.searchParams.get("code_challenge_method"), "S256");
   assert.equal(url.searchParams.get("scope"), SCOPES.join(" "));
-  assert.throws(() => consumeOAuthState(state, makeOwner()), /state/);
-  assert.ok(consumeOAuthState(state, owner));
-  assert.throws(() => consumeOAuthState(state, owner), /state/);
-  const expired = new URL(startOAuth(owner)).searchParams.get("state")!;
-  storage().run("UPDATE oauth_states SET expires_at=0");
-  assert.throws(() => consumeOAuthState(expired, owner), /expired/);
+  await assert.rejects(
+    async () => await consumeOAuthState(state, makeOwner()),
+    /state/,
+  );
+  assert.ok(await consumeOAuthState(state, owner));
+  await assert.rejects(
+    async () => await consumeOAuthState(state, owner),
+    /state/,
+  );
+  const expired = new URL(await startOAuth(owner)).searchParams.get("state")!;
+  await storage().run("UPDATE oauth_states SET expires_at=0");
+  await assert.rejects(
+    async () => await consumeOAuthState(expired, owner),
+    /expired/,
+  );
 });
 test("refresh rotation coalesces concurrent calls and revocation clears credentials", async () => {
   let refreshes = 0;
-  storeTokens({
+  await storeTokens({
     access_token: "expired",
     refresh_token: "first-refresh",
     expires_in: -1,
@@ -221,13 +233,13 @@ test("refresh rotation coalesces concurrent calls and revocation clears credenti
     ]);
     assert.equal(refreshes, 1);
     await disconnect();
-    assert.equal(connection().connected, false);
+    assert.equal((await connection()).connected, false);
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 test("API errors explain 401/403/404/429/5xx without echoing provider secrets", async () => {
-  storeTokens({
+  await storeTokens({
     access_token: "access",
     refresh_token: "refresh",
     expires_in: 14400,
@@ -308,13 +320,16 @@ test("manuscript import respects explicit page breaks and whole paragraphs", () 
     [paragraph, "Second paragraph", "Third paragraph"].join("\n\n"),
   );
 });
-test("input schemas reject unsafe dimensions, duplicate pages and unsupported counts", () => {
+test("input schemas reject unsafe dimensions, duplicate pages and unsupported counts", async () => {
   assert.equal(
-    preferencesSchema.safeParse({ ...preferences(), margin: 2, width: 2 })
-      .success,
+    preferencesSchema.safeParse({
+      ...(await preferences()),
+      margin: 2,
+      width: 2,
+    }).success,
     false,
   );
-  const book = createBook("Schema", "", 24);
+  const book = await createBook("Schema", "", 24);
   assert.equal(
     bookEdit.safeParse({
       ...book,
@@ -349,8 +364,8 @@ test("uploads validate decoded formats, reject traversal and protect referenced 
     () => upload(new File(["<svg/>"], "bad.svg", { type: "image/svg+xml" })),
     /Supported formats/,
   );
-  const book = createBook("Asset protection", "", 24);
-  saveBook({
+  const book = await createBook("Asset protection", "", 24);
+  await saveBook({
     ...book,
     pages: book.pages.map((p) => ({ ...p, assetId: asset.id })),
   });
@@ -363,9 +378,9 @@ test("uploads validate decoded formats, reject traversal and protect referenced 
   assert.notEqual(replacement.filename, asset.filename);
   assert.ok(readFileSync(assetPath(asset.filename)).length);
 });
-test("publishing readiness keeps creative issues advisory", () => {
-  const book = createBook("Readiness", "", 24),
-    asset = list<Asset>("assets")[0];
+test("publishing readiness keeps creative issues advisory", async () => {
+  const book = await createBook("Readiness", "", 24),
+    asset = (await list<Asset>("assets"))[0];
   const result = validateBook(book, undefined, [], false, 300);
   assert.ok(result.errors.some((e) => e.code === "connection"));
   assert.ok(result.warnings.some((e) => e.code === "image"));
@@ -383,8 +398,8 @@ test("publishing readiness keeps creative issues advisory", () => {
   );
 });
 test("live dataset inspection uses actual server responses and records access errors", async () => {
-  const template = list<Template>("templates")[0];
-  storeTokens({
+  const template = (await list<Template>("templates"))[0];
+  await storeTokens({
     access_token: "access",
     refresh_token: "refresh",
     expires_in: 14400,
@@ -399,17 +414,20 @@ test("live dataset inspection uses actual server responses and records access er
     assert.equal(result.pageCount, 33);
     globalThis.fetch = async () => json({}, 403);
     await assert.rejects(() => inspectTemplate(template.id), /403/);
-    assert.match(get<Template>("templates", template.id)!.error!, /403/);
+    assert.match(
+      (await get<Template>("templates", template.id))!.error!,
+      /403/,
+    );
   } finally {
     globalThis.fetch = originalFetch;
   }
 });
 test("publishing uploads, polls, autofills a new design, verifies count and saves confirmed result", async () => {
-  const book = createBook("Publish workflow", "", 24),
-    asset = list<Asset>("assets")[0],
+  const book = await createBook("Publish workflow", "", 24),
+    asset = (await list<Asset>("assets"))[0],
     mapping = defaultMapping(24);
   const template: Template = {
-    id: "source-design",
+    id: "DAHaJgBbCJ4",
     name: "Publish template",
     pageCount: 24,
     mapping,
@@ -422,8 +440,8 @@ test("publishing uploads, polls, autofills a new design, verifies count and save
     checkedAt: new Date().toISOString(),
     error: null,
   };
-  put("templates", template.id, template);
-  saveBook({
+  await put("templates", template.id, template);
+  await saveBook({
     ...book,
     templateId: template.id,
     pages: book.pages.map((p) => ({
@@ -439,7 +457,7 @@ test("publishing uploads, polls, autofills a new design, verifies count and save
     const endpoint = String(url);
     if (endpoint.endsWith("/dataset"))
       return json({ dataset: template.dataset });
-    if (endpoint.endsWith("/designs/source-design"))
+    if (endpoint.endsWith("/designs/DAHaJgBbCJ4"))
       return json({ design: { title: template.name, page_count: 24 } });
     if (endpoint.endsWith("/asset-uploads")) {
       uploadPosts++;
@@ -458,7 +476,7 @@ test("publishing uploads, polls, autofills a new design, verifies count and save
       autofillPosts++;
       const payload = JSON.parse(init!.body as string);
       assert.equal(payload.type, "create_from_design");
-      assert.equal(payload.design_id, "source-design");
+      assert.equal(payload.design_id, "DAHaJgBbCJ4");
       assert.equal(Object.keys(payload.data).length, 48);
       assert.equal(payload.data.PAGE_01_IMAGE.asset_id, "canva-asset");
       return json({ job: { id: "autofill-1", status: "in_progress" } });
@@ -497,21 +515,24 @@ test("publishing uploads, polls, autofills a new design, verifies count and save
     const summary = await startPublishing(book.id);
     assert.equal(summary.status, "queued");
     for (let i = 0; i < 6; i++) {
-      const job = get<PublishJob>("publishing_jobs", summary.id)!;
+      const job = (await get<PublishJob>("publishing_jobs", summary.id))!;
       job.nextAt = 0;
-      storage().run(
+      await storage().run(
         "UPDATE publishing_jobs SET document=? WHERE id=?",
         JSON.stringify(job),
         job.id,
       );
       await advanceJob(job.id);
     }
-    const job = get<PublishJob>("publishing_jobs", summary.id)!;
+    const job = (await get<PublishJob>("publishing_jobs", summary.id))!;
     assert.equal(job.status, "success");
     assert.equal(job.designId, "new-design");
     assert.equal(uploadPosts, 1);
     assert.equal(autofillPosts, 1);
-    assert.equal(storage().all("SELECT * FROM generated_designs").length, 1);
+    assert.equal(
+      (await storage().all("SELECT * FROM generated_designs")).length,
+      1,
+    );
     assert.equal(
       buildAutofill(job.snapshot.book, job.snapshot.template, job.uploaded)
         .type,
@@ -522,7 +543,7 @@ test("publishing uploads, polls, autofills a new design, verifies count and save
   }
 });
 test("interrupted POST is not replayed, and failed remote jobs never report success", async () => {
-  const previous = list<PublishJob>("publishing_jobs")[0];
+  const previous = (await list<PublishJob>("publishing_jobs"))[0];
   const job = {
     ...previous,
     id: "interrupted-test",
@@ -532,7 +553,7 @@ test("interrupted POST is not replayed, and failed remote jobs never report succ
     designUrl: undefined,
     nextAt: 0,
   };
-  storage().run(
+  await storage().run(
     "INSERT INTO publishing_jobs (id,book_id,document) VALUES (?, ?, ?)",
     job.id,
     job.bookId,
@@ -549,7 +570,7 @@ test("interrupted POST is not replayed, and failed remote jobs never report succ
     assert.equal(requests, 0);
     assert.match(result.message, /will not be replayed/);
     const failed = { ...job, id: "remote-fail", remoteId: "failed-remote" };
-    storage().run(
+    await storage().run(
       "INSERT INTO publishing_jobs (id,book_id,document) VALUES (?, ?, ?)",
       failed.id,
       failed.bookId,
@@ -570,11 +591,10 @@ test("interrupted POST is not replayed, and failed remote jobs never report succ
     globalThis.fetch = originalFetch;
   }
 });
-
 test("preflight detects illustration files changed outside the application", async () => {
-  const asset = list<Asset>("assets")[0];
-  const book = createBook("File integrity", "", 24);
-  saveBook({
+  const asset = (await list<Asset>("assets"))[0];
+  const book = await createBook("File integrity", "", 24);
+  await saveBook({
     ...book,
     pages: book.pages.map((p) => ({ ...p, text: "Copy", assetId: asset.id })),
   });

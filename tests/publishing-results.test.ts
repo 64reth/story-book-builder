@@ -5,12 +5,11 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { partialFixture } from "./fixtures/partial-book";
-import { createBook, get, saveJob } from "../src/lib/repository";
+import { createBook, get, saveJob, put } from "../src/lib/repository";
 import { advanceJob, recheckJob, jobSummary } from "../src/lib/publishing";
 import { storeTokens } from "../src/lib/canva";
 import { storage } from "../src/lib/storage";
 import type { PublishJob } from "../src/lib/types";
-
 process.env.STORYBOOK_DATA_DIR = mkdtempSync(
   path.join(os.tmpdir(), "storybook-results-"),
 );
@@ -22,9 +21,9 @@ afterEach(() => {
 });
 const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), { status });
-function fixture() {
+async function fixture() {
   const { book, template } = partialFixture();
-  const local = createBook("Result verification", "", 33);
+  const local = await createBook("Result verification", "", 33);
   const stamp = new Date().toISOString();
   const job: PublishJob = {
     id: randomUUID(),
@@ -41,8 +40,8 @@ function fixture() {
     uploaded: {},
     snapshot: { book, template, assets: [], dpi: 300 },
   };
-  saveJob(job);
-  storeTokens({
+  await saveJob(job);
+  await storeTokens({
     access_token: "fixture",
     refresh_token: "fixture",
     expires_in: 14400,
@@ -75,15 +74,17 @@ function mock(
         });
   };
 }
-test("legacy success without result evidence is shown as needing recovery without changing the record", () => {
-  const job = { ...fixture(), status: "success" as const };
-  saveJob(job);
+test("legacy success without result evidence is shown as needing recovery without changing the record", async () => {
+  const job = { ...(await fixture()), status: "success" as const };
+  await saveJob(job);
   const summary = jobSummary(job);
   assert.equal(summary.status, "failed");
   assert.match(summary.message, /Stored completion is missing/);
-  assert.equal(get<PublishJob>("publishing_jobs", job.id)!.status, "success");
+  assert.equal(
+    (await get<PublishJob>("publishing_jobs", job.id))!.status,
+    "success",
+  );
 });
-
 for (const [name, response] of [
   ["missing job", {}],
   ["numeric job ID", { job: { id: 42, status: "success" } }],
@@ -121,22 +122,23 @@ for (const [name, response] of [
   ],
 ] as const) {
   test(`${name} cannot produce false-positive completion`, async () => {
-    const job = fixture();
+    const job = await fixture();
     mock(response);
-    const before = storage().all("SELECT * FROM generated_designs").length;
+    const before = (await storage().all("SELECT * FROM generated_designs"))
+      .length;
     const result = await advanceJob(job.id);
     assert.equal(result.status, "failed");
     assert.equal(result.designId, undefined);
     assert.equal(result.completedAt, undefined);
     assert.equal(
-      storage().all("SELECT * FROM generated_designs").length,
+      (await storage().all("SELECT * FROM generated_designs")).length,
       before,
     );
     assert.ok(!result.message.includes("private content"));
   });
 }
 test("pending is not complete, and known-job recovery confirms the result without POSTs", async () => {
-  const job = fixture();
+  const job = await fixture();
   mock({ job: { id: "known-job", status: "in_progress" } });
   const pending = await advanceJob(job.id);
   assert.equal(pending.status, "generating");
@@ -156,13 +158,13 @@ test("mismatched metadata and misleading URLs fail verification", async () => {
     ["created-design", "https://www.canva.com.evil.example/design/x/edit"],
     ["created-design", "https://www.canva.com/"],
   ]) {
-    const job = fixture();
+    const job = await fixture();
     mock(successful(), id, url);
     assert.equal((await advanceJob(job.id)).status, "failed");
   }
 });
 test("malformed JSON cannot complete a job and recoverable provider errors do not leak raw messages", async () => {
-  const job = fixture();
+  const job = await fixture();
   globalThis.fetch = async () => new Response("<html>not a job</html>");
   const invalid = await advanceJob(job.id);
   assert.equal(invalid.status, "failed");
@@ -185,14 +187,14 @@ test("malformed JSON cannot complete a job and recoverable provider errors do no
   );
 });
 test("failed polling stays incomplete, is bounded, and can recover the same remote job", async () => {
-  const job = fixture();
+  const job = await fixture();
   globalThis.fetch = async () => json({ code: "rate_limited" }, 429);
   const retrying = await advanceJob(job.id);
   assert.equal(retrying.status, "generating");
   assert.equal(retrying.designId, undefined);
   assert.match(retrying.message, /rate_limited.*Retrying status check/);
-  saveJob({
-    ...get<PublishJob>("publishing_jobs", job.id)!,
+  await saveJob({
+    ...(await get<PublishJob>("publishing_jobs", job.id))!,
     attempts: 40,
     nextAt: 0,
   });
@@ -201,14 +203,14 @@ test("failed polling stays incomplete, is bounded, and can recover the same remo
   assert.equal((await recheckJob(job.id)).status, "success");
 });
 test("failed link refresh preserves earlier completion and uncertain submissions are never replayed", async () => {
-  const job = fixture();
+  const job = await fixture();
   mock(successful());
   await recheckJob(job.id);
-  const before = get<PublishJob>("publishing_jobs", job.id);
+  const before = await get<PublishJob>("publishing_jobs", job.id);
   globalThis.fetch = async () => json({ code: "not_found" }, 404);
   await assert.rejects(() => recheckJob(job.id), /404.*not_found/);
-  assert.deepEqual(get<PublishJob>("publishing_jobs", job.id), before);
-  saveJob({ ...job, status: "failed", remoteId: "uncertain" });
+  assert.deepEqual(await get<PublishJob>("publishing_jobs", job.id), before);
+  await saveJob({ ...job, status: "failed", remoteId: "uncertain" });
   let requests = 0;
   globalThis.fetch = async () => {
     requests++;
@@ -216,4 +218,19 @@ test("failed link refresh preserves earlier completion and uncertain submissions
   };
   await assert.rejects(() => recheckJob(job.id), /will not be replayed/);
   assert.equal(requests, 0);
+});
+
+test("refreshing a completed historical result preserves the owner's active draft", async () => {
+  const job = await fixture();
+  mock(successful());
+  await recheckJob(job.id);
+  await put("settings", `active-draft:${job.bookId}`, {
+    designId: "explicit-owner-selection",
+  });
+  await recheckJob(job.id);
+  assert.equal(
+    (await get<{ designId: string }>("settings", `active-draft:${job.bookId}`))!
+      .designId,
+    "explicit-owner-selection",
+  );
 });

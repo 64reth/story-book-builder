@@ -1,124 +1,61 @@
-# Story Book Builder — Build 001
+﻿# Story Book Builder
 
-Local publishing workspace for illustrated storybooks. Next.js 16.4.5 App Router, strict TypeScript, React, Tailwind CSS, Lucide, SQLite (`better-sqlite3`) and Sharp. No hosting service or Canva MCP connection is required.
+A private desktop publishing workspace for preparing story books and assembling editable Canva drafts. Local development uses SQLite and files; the Workers build uses D1 and R2.
 
-## Run on Windows
-
-Use PowerShell in `C:\Projects\story-book-builder` with Node.js 24 and npm 11:
+## Local development
 
 ```powershell
 npm.cmd ci
-# Only if .env.local does not exist:
-if (-not (Test-Path -LiteralPath .env.local)) { Copy-Item .env.example .env.local }
-npm run dev
+if (!(Test-Path .env.local)) { Copy-Item .env.example .env.local }
+npm.cmd run dev
 ```
 
-Open **http://127.0.0.1:3000**. Use this exact hostname: API origin checks reject `localhost` when `APP_URL` is `127.0.0.1`. The dev/start scripts bind to loopback. Stop any older `next dev` instance before starting a new one. If PowerShell blocks `npm.ps1`, use `npm.cmd` for all commands.
+Open **http://127.0.0.1:3000**. Configure the existing `.env.local` with the Canva client ID/secret, a random session secret and the exact local OAuth callback. Keep it private. An existing workspace, database and uploads are retained.
 
-Build 001A fixes a startup hydration hang when a server started with Next's default `localhost` metadata is opened through `127.0.0.1`. `allowedDevOrigins` explicitly permits the OAuth loopback hostname for Next's development WebSocket/debug stream. Reload an already-open stuck tab after the configuration reloads. Workspace requests now have a 15-second deadline, payload validation and an explicit **Retry loading workspace** state. Startup does not require Canva credentials or authorization. See [Build 001A investigation](docs/BUILD001A.md) for the reproduction and verification evidence.
+## Workspace
 
-Set these values in `.env.local`; existing values are never changed by the app:
+Select a book or choose **New Book**. Drop illustrations into the batch area, review page assignments and apply. Explicit page numbers are matched first; unnumbered files use natural sorting. Folder selection supports batch artwork replacement without deleting old files used by versions or history.
 
-| Variable                   | Purpose                                                                                      |
-| -------------------------- | -------------------------------------------------------------------------------------------- |
-| `CANVA_CLIENT_ID`          | Client ID from Canva; the supplied app is `OC-AaGxgwv_chxn`.                                 |
-| `CANVA_CLIENT_SECRET`      | Client secret from that app; required to connect. Never put it in a `NEXT_PUBLIC_` variable. |
-| `CANVA_REDIRECT_URI`       | `http://127.0.0.1:3000/auth/canva/callback` — register exactly in Canva.                     |
-| `CANVA_TEMPLATE_DESIGN_ID` | Initial registration; use `DAHaJgBbCJ4` for Automated Template Builder.                      |
-| `APP_URL`                  | `http://127.0.0.1:3000`                                                                      |
-| `SESSION_SECRET`           | At least 32 random characters. Encrypts tokens and signs owner cookies.                      |
+Import TXT/Markdown or paste a manuscript. `Page N` and Markdown page headings target numbered pages. Explicit `---` separators and paragraph-based proposals are supported. Review the distribution before applying. Use the thumbnail grid and right-side inspector to edit pages; changes save automatically.
 
-Generate a secret locally if you do not already have one (prints a new value for you to copy):
+Use **Workspace tools** for the library, assets, templates, publishing history and Settings. Connect Canva in Settings. A stale/missing source dataset is inspected automatically; Templates also offers manual refresh.
+
+- **Create New Canva Draft** uses the protected master `DAHaJgBbCJ4` and links the confirmed result as the active draft.
+- Existing copies require explicit active-draft selection after account/book association checks. Neither `DAHaKl_mkXU` nor `DAHaK2Bh7W8` is silently selected.
+- **Refine Canva Draft** reviews the exact changed fields before updating the chosen generated design. Only changed supported populated fields are submitted. Manual edits to those tagged elements may be overwritten; untouched fields and blank local fields are omitted.
+- No-change plans do not create jobs. Success requires Canva's terminal `success`, the expected result type and verified design identity. History exposes the operation, IDs and direct Canva link. Known jobs can be checked/recovered without replaying submission.
+
+Missing copy/art, print DPI, aspect ratios and layout estimates are advisories. Repeated issues are grouped; incompatible populated fields are transparently skipped. Omitted fields can leave template placeholders or existing content. Technical access, mapping/request impossibility and real API failures have recoverable errors. Keep the workspace open to drive confirmed uploads and bounded polling; returning resumes persisted progress.
+
+Local page styling is a preview. Canva determines the finished layout. The master is never an update destination, and automated tests never modify a real Canva draft.
+
+## Checks
 
 ```powershell
-node -e "process.stdout.write(require('node:crypto').randomBytes(48).toString('base64url'))"
+npm.cmd run lint
+npm.cmd run typecheck
+npm.cmd run test
+npm.cmd run test:browser
+npm.cmd run check:vinext
+npm.cmd run build
+npm.cmd run test:worker
 ```
 
-Restart after changing environment variables. Changing `SESSION_SECRET` makes stored Canva tokens unreadable; reconnect Canva afterward. Do not commit secrets or share the data directory.
+Chrome coverage targets 1920×1080 and 2560×1440. `test:worker` exercises the compiled Worker in isolated workerd D1/R2 simulations, including owner authentication, storage and OAuth state compatibility. It does not claim hosted/live Canva verification.
 
-## Publishing workflow
+`npm.cmd run build` now creates the staging-mode Workers build with vinext. `build:next` retains the legacy Next.js build check. `npm.cmd run dev` preserves localhost SQLite development. The Cloudflare CLI uses a project-local supported Node runtime; no system Node installation is changed.
 
-1. In **Book Library**, create a 24, 28, 32 or 33 page book. First launch creates **Aves Adventures — Nervous Cake** with 33 blank pages, 8.625 × 8.7 inch dimensions and a 0.375 inch safe margin.
-2. Type page copy in the editor or **Import manuscript**. Separate pages with `---` on its own line, or propose a distribution at whole-paragraph boundaries. Review and edit every proposed page before applying it. Import replaces text while retaining illustrations.
-3. Upload PNG, JPEG or WebP illustrations in **Asset Library**. Drag/drop and multiple uploads work. Assign in asset details or the editor’s Illustration tab. Replacement updates the asset across books. Deletion requires confirmation and is refused while a book, saved version or publishing history references it.
-4. In **Settings**, connect Canva. Configure these scopes in the Canva Developer Portal first: `asset:read`, `asset:write`, `design:content:read`, `design:content:write`, `design:meta:read`.
-5. In **Templates**, inspect the actual source design. The app retrieves its dataset and page count, displays actual names/types, and lets you map each page’s fields. Registration is not verification. Expected names for the supplied source are `PAGE_01_IMAGE` / `PAGE_01_TEXT` through `PAGE_33_IMAGE` / `PAGE_33_TEXT`; existence is never assumed. Add labels in Canva’s Bulk Create app if the dataset is empty, then inspect again.
-6. Choose the template in book settings or **Publishing**. Read the compact draft summary or run **Validate readiness** to recheck live Canva access. Missing text/artwork, print DPI, crop/overflow estimates, page-count differences and mapping gaps are advisories. Generation submits supported, populated fields only. Wrong-type, missing, duplicate or unused mappings are skipped without guessing replacements. Technical errors are limited to connection/source access and inability to form any valid request; failed API operations show a recoverable error.
-7. Select **Generate Canva Draft**. Keep Publishing open to drive uploads and polling. Actual stages and upload counts are shown, with bounded backoff (40 polls maximum per stage). Generation percentage is a local stage indicator, not Canva-reported render progress. Returning here resumes a persisted job after navigation or restart.
-8. Review **Skipped fields** and optional **Page diagnostics**. Populated content that cannot be mapped is explicitly marked; omitted fields retain source-template content, including placeholder copy or old artwork. Only confirmed successful Autofill results are marked successful; when the source page count is known, the result must match it. Open the saved edit URL and finish in Canva. Editing URLs expire after 30 days; design IDs remain in history.
+## Cloudflare release
 
-The source template owns actual geometry, guides, Lilita One font, pastel bubbles, editable text and layer order. The app sends up to one compatible, populated text value and image per mapped page using `create_from_design`, and never calls `update_design`. A partial book keeps the source design’s pages; none are added or removed. Local layout controls are preview-only. Verify crop, overflow, fonts, guides and retained placeholders in Canva. Install Lilita One on Windows for a closer preview; no font download is required.
+[Cloudflare status and runbook](docs/CLOUDFLARE.md) records the actual resources, migration evidence, supported commands and remaining release gates. A staging D1 database was created and its imported metadata verified. **R2 account enablement is still required; no hosted deployment success is claimed.**
 
-Build 001B aggregates repeated advisories and saves an immutable field plan plus a submission report with each new publishing job. For the supplied 33-page case, 33 image fields and 26 text fields can be sent; `PAGE_12_TEXT` and the six blank text fields on pages 28–33 are omitted. DPI values remain accessible in collapsed diagnostics and never block a draft. [Canva’s official guide](https://www.canva.dev/docs/apps/rest-apis/autofill-guide/) explicitly permits omitted fields with template defaults. See [Build 001B report](docs/BUILD001B.md) for evidence and limits.
+Hosted access requires an owner login before any workspace/API data is returned. Secrets use Cloudflare secret bindings. `.env.local`, `.dev.vars*`, local databases/uploads, token state and temporary credential files are ignored. Hosted OAuth is authorised independently so localhost and hosted deployments do not compete over one rotating refresh token.
 
-## Routes and storage
+Use `deploy:staging` for the initial release. Production is gated until that exact Git commit passes actual hosted checks, production storage is migrated and the exact DNS hostname is available. No unrelated Worker, database, bucket or DNS record should be changed.
 
-| Route                  | Screen                                                       |
-| ---------------------- | ------------------------------------------------------------ |
-| `/`                    | Dashboard and setup progress                                 |
-| `/books`               | Search/filter; create, edit, duplicate, archive/restore      |
-| `/books/:id`           | Editor; autosave, undo/redo, reorder, import and checkpoints |
-| `/assets`              | Upload, rename, assign, replace and protected deletion       |
-| `/templates`           | Live dataset inspection and editable field mappings          |
-| `/publishing`          | Preflight, durable jobs and design history                   |
-| `/settings`            | Canva connection, defaults, print target, themes and storage |
-| `/auth/canva/callback` | Server-only OAuth callback                                   |
+## Build notes
 
-`/api/[...path]` handles workspace reads, book CRUD/version/validation/publishing actions, asset upload/read/replace/rename/delete, template registration/inspection/mapping, job advancement, settings, connect and disconnect. Mutations require a signed owner session and matching `Origin`. A workspace GET establishes the local session. Credentials are never returned by these endpoints.
-
-`data/storybook.sqlite` uses WAL and automatic migrations from `migrations/`. `001-foundation.sql` defines books, ordered pages, assets, templates, publishing jobs with leases, generated designs, draft versions, settings, encrypted credentials, expiring OAuth states and indexes. Typed JSON documents store entity data; pages have separate ordered rows and book writes are transactional. `src/lib/storage.ts` is the adapter boundary for future database work. A D1 adapter is not included.
-
-Uploads have random server-owned names under ignored `data/uploads/`, outside application source. Images are decoded, auto-oriented and re-encoded to remove unsafe appended content and metadata; single-frame images only, 25 MB limit and 80 megapixel decode limit. Immutable replacement files preserve in-progress publishing snapshots. Old replacement files are retained; garbage collection is not included.
-
-Autosave uses optimistic book revisions to reject stale-tab writes. Undo/redo covers the current editor session (40 grouped states). Save checkpoints through **Draft versions**; restore saves the current draft first. Listings expose the most recent 30 checkpoints. Page count is chosen at creation; create another book to change length.
-
-Back up `data` with the server stopped, plus `.env.local` in secure storage. Restore both to recover encrypted connections. Secrets, databases, uploads, browser reports and private test data are ignored by Git. Optional `STORYBOOK_DATA_DIR` overrides storage for tests or another local directory.
-
-## Canva REST implementation
-
-Contracts checked against official documentation on 6 November 2026:
-
-| Endpoint                                    | Use                                                               |
-| ------------------------------------------- | ----------------------------------------------------------------- |
-| `https://www.canva.com/api/oauth/authorize` | Authorization Code + PKCE S256, random state, exact redirect      |
-| `POST /rest/v1/oauth/token`                 | Server-side Basic client auth, code exchange and refresh rotation |
-| `POST /rest/v1/oauth/revoke`                | Revoke token lineage and consent before removing credentials      |
-| `GET /rest/v1/designs/{id}`                 | Source/result page counts and edit links                          |
-| `GET /rest/v1/designs/{id}/dataset`         | Real field names and types                                        |
-| `POST /rest/v1/asset-uploads`               | Binary upload with Base64-name metadata                           |
-| `GET /rest/v1/asset-uploads/{id}`           | Poll for confirmed Canva asset ID                                 |
-| `POST /rest/v1/autofills`                   | Explicit `create_from_design`, source ID and validated data       |
-| `GET /rest/v1/autofills/{id}`               | Poll design generation                                            |
-
-References: [Authentication](https://www.canva.dev/docs/apps/rest-apis/authentication/), [Design dataset](https://www.canva.dev/docs/apps/rest-apis/reference/designs/get-design-dataset/), [Autofill](https://www.canva.dev/docs/apps/rest-apis/reference/autofills/create-design-autofill-job/), [Asset uploads](https://www.canva.dev/docs/apps/rest-apis/reference/assets/create-asset-upload-job/).
-
-OAuth state is hashed, owner-bound, expires after ten minutes and is consumed once. PKCE verifiers and tokens use AES-256-GCM derived from `SESSION_SECRET`. Refreshes are coalesced within the supported single Node process to protect rotation. Provider error bodies are never relayed to browsers.
-
-One publishing job runs at a time. Each snapshots the book, template, asset metadata and DPI target. Remote job IDs, uploaded asset IDs, backoff and progress persist. A database lease prevents simultaneous advancement. GET status checks retry with backoff; creation requests are never replayed after an uncertain network outcome or crash. Review Canva before generating again if the outcome is unknown. The app cannot detect unlabeled legacy artwork or verify guides/layer order through dataset inspection.
-
-## Verification
-
-```powershell
-npm run lint
-npm run typecheck
-npm test
-npm run build
-npm run test:browser
-# Production local run after build:
-npm start
-```
-
-Core tests use temporary SQLite storage and mocked Canva responses. They cover persistence across processes, revisions/ordering/versions, image safety/reference protection, OAuth state/PKCE/encryption/refresh, API errors, mappings, preflight and confirmed/failing/interrupted publishing jobs. These are contract tests, not proof of a live Canva connection.
-
-Browser tests start an isolated app on **127.0.0.1:3101**, use `.local/browser-*` storage and a separate `.next-browser` build directory, and never touch real books or credentials. They use installed Chrome on Windows. Without Chrome, run `npx playwright install chromium` first. Tests cover manuscript create/import/save/reload, reordering, checkpoints, asset upload/assignment/replacement/protected deletion, API boundaries, six routes at mobile width and persisted themes. Screenshots go under `.local/`; failure traces go to `test-results/`.
-
-The browser test server intentionally uses Next's default hostname while Chrome opens `127.0.0.1`; this reproduces the hostname mismatch behind Build 001A. Chrome runs with extensions disabled. Startup regressions cover the HMR handshake and initial API request, HTTP/network/JSON/schema failures, a stalled request deadline, recovery through Retry, and empty-library navigation with Canva disconnected. Unit tests additionally cover a stalled response body and cancellation when leaving a page.
-
-## Build 001 limits
-
-- Local single-owner mode with host/origin/session boundaries. No remote login, multi-user accounts, deployment, cloud storage or background service. Do not expose the dev server publicly.
-- Live OAuth/dataset/Autofill verification requires the client secret, matching Developer Portal configuration and owner authorization. Plan, scopes and design permissions can block Canva calls; these appear as errors. No connection, fields or successful jobs are fabricated.
-- Publishing advances with the Publishing view open. Uncertain creation requests require review in Canva. Reopen the design by ID in Canva if its saved edit link expires.
-- Final typography, dimensions, crop/replacement behaviour and overflow require manual review in Canva. No PDF/PNG export is included; the export setting records a finishing preference.
-- Checkpoints preserve copy, ordering, assignments and preview settings. They do not duplicate asset bytes: replacement changes the current asset in books and versions. Publishing snapshots retain original bytes.
-- Replacement-file cleanup, checkpoint pruning and automated backups are deferred. Native SQLite binaries must match Node and platform.
+- [Build 001C investigation](docs/BUILD001C.md)
+- [Build 001D refinement](docs/BUILD001D.md)
+- [Build 002 desktop workspace](docs/BUILD002.md)
+- [Cloudflare migration and release evidence](docs/CLOUDFLARE.md)

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { stat } from "node:fs/promises";
+import { artworkSize } from "./artwork-store";
 import {
   accessToken,
   connection,
@@ -9,7 +9,7 @@ import {
   canva,
   providerCode,
 } from "./canva";
-import { assetPath, readAsset } from "./assets";
+import { readAsset } from "./assets";
 import {
   AppError,
   bookById,
@@ -23,7 +23,12 @@ import {
 } from "./repository";
 import { storage } from "./storage";
 import { buildAutofill, planAutofill, validateBook } from "./validation";
-import { fieldManifest, refinementPlan, MASTER } from "./refinement";
+import {
+  fieldManifest,
+  refinementPlan,
+  MASTER,
+  inspectDestination,
+} from "./refinement";
 import type {
   Asset,
   JobSummary,
@@ -52,9 +57,9 @@ export function jobSummary(job: PublishJob): JobSummary {
   return { ...summary, operation: job.operation ?? "create_from_design" };
 }
 export async function publishingValidation(bookId: string, live = false) {
-  const book = bookById(bookId);
+  const book = await bookById(bookId);
   let inspectionError: string | undefined;
-  if (live && book.templateId && connection().connected) {
+  if (live && book.templateId && (await connection()).connected) {
     try {
       await inspectTemplate(book.templateId);
     } catch (error) {
@@ -64,16 +69,18 @@ export async function publishingValidation(bookId: string, live = false) {
           : "Canva source inspection failed. Check the connection and retry validation.";
     }
   }
-  const assets = list<Asset>("assets");
+  const assets = await list<Asset>("assets");
   const unavailable = await unavailableAssets(
     assets.filter((a) => book.pages.some((p) => p.assetId === a.id)),
   );
   const result = validateBook(
     book,
-    book.templateId ? get<Template>("templates", book.templateId) : undefined,
+    book.templateId
+      ? await get<Template>("templates", book.templateId)
+      : undefined,
     assets,
-    connection().connected,
-    preferences().dpi,
+    (await connection()).connected,
+    (await preferences()).dpi,
     unavailable,
   );
   if (
@@ -87,9 +94,8 @@ async function unavailableAssets(assets: Asset[]) {
   const unavailable: string[] = [];
   for (const asset of assets) {
     try {
-      const file = await stat(assetPath(asset.filename));
-      if (!file.isFile() || file.size !== asset.size)
-        throw new Error("File changed");
+      const size = await artworkSize(asset.filename);
+      if (size !== asset.size) throw new Error("File changed");
     } catch {
       unavailable.push(asset.id);
     }
@@ -99,8 +105,20 @@ async function unavailableAssets(assets: Asset[]) {
 export async function startPublishing(
   bookId: string,
   operation: "create_from_design" | "update_design" = "create_from_design",
-  approved?: { fields: string[]; revision: number; designId: string },
+  approved?: {
+    fields: string[];
+    revision: number;
+    designId: string;
+  },
 ) {
+  if (
+    operation === "create_from_design" &&
+    (await bookById(bookId)).templateId !== MASTER
+  )
+    throw new AppError(
+      "Create New Draft uses the protected Automated Template Builder master. Select that source template first.",
+      422,
+    );
   const refinement =
     operation === "update_design" ? await refinementPlan(bookId) : null;
   if (
@@ -123,20 +141,20 @@ export async function startPublishing(
   const validation = await publishingValidation(bookId, true);
   if (validation.errors.length)
     throw new AppError(validation.errors[0].message, 422);
-  const unavailable = await unavailableAssets(list<Asset>("assets"));
+  const unavailable = await unavailableAssets(await list<Asset>("assets"));
   // Capture one immutable, validated revision after external awaits.
-  return storage().transaction(() => {
-    const book = bookById(bookId),
-      template = get<Template>("templates", book.templateId!)!,
-      assets = list<Asset>("assets").filter((a) =>
+  return await storage().transaction(async () => {
+    const book = await bookById(bookId),
+      template = (await get<Template>("templates", book.templateId!))!,
+      assets = (await list<Asset>("assets")).filter((a) =>
         book.pages.some((p) => p.assetId === a.id),
       );
     const checked = validateBook(
       book,
       template,
       assets,
-      connection().connected,
-      preferences().dpi,
+      (await connection()).connected,
+      (await preferences()).dpi,
       unavailable,
     );
     if (checked.errors.length)
@@ -153,7 +171,7 @@ export async function startPublishing(
       fields.some((f) => f.kind === "image" && f.assetId === a.id),
     );
     if (
-      list<PublishJob>("publishing_jobs").some(
+      (await list<PublishJob>("publishing_jobs")).some(
         (j) => !["success", "failed"].includes(j.status),
       )
     )
@@ -161,7 +179,7 @@ export async function startPublishing(
         "A publishing job is already active. Resume it before generating another draft.",
         409,
       );
-    checkpoint(bookId);
+    await checkpoint(bookId);
     const job: PublishJob = {
       id: randomUUID(),
       bookId,
@@ -177,7 +195,7 @@ export async function startPublishing(
         book,
         template,
         assets: uploads,
-        dpi: preferences().dpi,
+        dpi: (await preferences()).dpi,
         fields,
       },
       validation: checked,
@@ -186,7 +204,7 @@ export async function startPublishing(
       targetDesignId: refinement?.designId,
       manifest: refinement?.manifest ?? fieldManifest(fields, assets),
     };
-    saveJob(job);
+    await saveJob(job);
     return jobSummary(job);
   });
 }
@@ -200,6 +218,7 @@ function checkRemote(remote: RemoteJob) {
 // Both normal polling and explicit recovery use GETs only after submission.
 // Never accept an HTTP 200 or a pending job as a completed design.
 async function confirmCreation(job: PublishJob, remote: RemoteJob) {
+  const previouslyComplete = job.status === "success";
   checkRemote(remote);
   const design = remote.result?.design;
   if (
@@ -218,7 +237,13 @@ async function confirmCreation(job: PublishJob, remote: RemoteJob) {
       502,
     );
   const meta = await canva<{
-    design: { id: string; page_count?: number; urls?: { edit_url?: string } };
+    design: {
+      id: string;
+      page_count?: number;
+      urls?: {
+        edit_url?: string;
+      };
+    };
   }>(`/designs/${encodeURIComponent(design.id)}`);
   if (meta?.design?.id !== design.id)
     throw new AppError(
@@ -264,16 +289,15 @@ async function confirmCreation(job: PublishJob, remote: RemoteJob) {
     job.operation === "update_design"
       ? `UPDATED Canva design ${design.id}. Only reviewed changed fields were submitted.`
       : `CREATED Canva design ${design.id}. Existing Canva books were not updated.`;
-  storage().transaction(() => {
+  await storage().transaction(async () => {
     // Keep the original generated-design creation timestamp when refreshing links.
-    const previous = storage().get<{ document: string }>(
-      "SELECT document FROM generated_designs WHERE id=?",
-      design.id,
-    );
+    const previous = await storage().get<{
+      document: string;
+    }>("SELECT document FROM generated_designs WHERE id=?", design.id);
     const record = previous
       ? JSON.parse(previous.document)
       : { id: design.id, createdAt: job.completedAt };
-    storage().run(
+    await storage().run(
       "INSERT OR REPLACE INTO generated_designs VALUES (?, ?, ?, ?)",
       design.id,
       job.id,
@@ -287,20 +311,22 @@ async function confirmCreation(job: PublishJob, remote: RemoteJob) {
         confirmedAt: job.confirmedAt,
       }),
     );
-    saveJob(job);
-    put("settings", `active-draft:${job.bookId}`, { designId: design.id });
+    await saveJob(job);
+    if (!previouslyComplete && job.operation === "create_from_design")
+      await put("settings", `active-draft:${job.bookId}`, {
+        designId: design.id,
+      });
   });
 }
-
 export async function recheckJob(id: string) {
-  let job = get<PublishJob>("publishing_jobs", id);
+  let job = await get<PublishJob>("publishing_jobs", id);
   if (!job) throw new AppError("Publishing job not found.", 404);
   if (!job.remoteId || job.remoteId === "uncertain")
     throw new AppError(
       "No confirmed Autofill job ID is available. Check Canva manually; this request will not be replayed.",
       409,
     );
-  const lease = storage().run(
+  const lease = await storage().run(
     "UPDATE publishing_jobs SET lease_until=? WHERE id=? AND lease_until < ?",
     Date.now() + 90000,
     id,
@@ -311,7 +337,7 @@ export async function recheckJob(id: string) {
       "A status check is already running. Try again shortly.",
       409,
     );
-  job = get<PublishJob>("publishing_jobs", id)!;
+  job = (await get<PublishJob>("publishing_jobs", id))!;
   try {
     if (!job.remoteId || job.remoteId === "uncertain")
       throw new AppError(
@@ -337,19 +363,22 @@ export async function recheckJob(id: string) {
       job.nextAt = 0;
       job.message =
         "Canva job is still generating. Status checks resumed; no new design was requested.";
-      saveJob(job);
+      await saveJob(job);
     }
     return jobSummary(job);
   } finally {
-    storage().run("UPDATE publishing_jobs SET lease_until=0 WHERE id=?", id);
+    await storage().run(
+      "UPDATE publishing_jobs SET lease_until=0 WHERE id=?",
+      id,
+    );
   }
 }
 export async function advanceJob(id: string) {
-  let job = get<PublishJob>("publishing_jobs", id);
+  let job = await get<PublishJob>("publishing_jobs", id);
   if (!job) throw new AppError("Publishing job not found.", 404);
   if (["success", "failed"].includes(job.status) || job.nextAt > Date.now())
     return jobSummary(job);
-  const lease = storage().run(
+  const lease = await storage().run(
     "UPDATE publishing_jobs SET lease_until=? WHERE id=? AND lease_until < ?",
     Date.now() + 90000,
     id,
@@ -357,7 +386,7 @@ export async function advanceJob(id: string) {
   );
   if (!lease.changes) return jobSummary(job);
   // Re-read after acquiring the lease; another request may have advanced it.
-  job = get<PublishJob>("publishing_jobs", id)!;
+  job = (await get<PublishJob>("publishing_jobs", id))!;
   try {
     await accessToken();
     if (job.attempts >= 40)
@@ -376,7 +405,7 @@ export async function advanceJob(id: string) {
           // Persist uncertainty before non-idempotent creation. A crash never replays a POST.
           job.message = `Starting upload: ${asset.name}`;
           job.pendingUpload = { assetId: asset.id, remoteId: "uncertain" };
-          saveJob(job);
+          await saveJob(job);
           const bytes = await readAsset(asset);
           const remote = await remoteJob("/asset-uploads", {
             method: "POST",
@@ -429,11 +458,24 @@ export async function advanceJob(id: string) {
         const submission =
           job.operation === "update_design"
             ? {
-                ...payload,
                 type: "update_design",
                 design_id: job.targetDesignId,
+                data: payload.data,
               }
             : payload;
+        if (job.operation === "update_design") {
+          const dataset = await inspectDestination(
+            job.bookId,
+            job.targetDesignId!,
+          );
+          if (
+            job.snapshot.fields?.some((f) => dataset[f.field]?.type !== f.kind)
+          )
+            throw new AppError(
+              "Destination fields changed during upload. Review the dataset and affected fields again. No update was submitted.",
+              409,
+            );
+        }
         if (
           job.operation === "update_design" &&
           (!job.targetDesignId ||
@@ -447,7 +489,7 @@ export async function advanceJob(id: string) {
         job.status = "generating";
         job.remoteId = "uncertain";
         job.message = "Submitting Canva Autofill";
-        saveJob(job);
+        await saveJob(job);
         const remote = await remoteJob("/autofills", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -480,7 +522,7 @@ export async function advanceJob(id: string) {
     }
     job.nextAt =
       Date.now() + Math.min(15000, 2000 * Math.pow(1.3, job.attempts));
-    saveJob(job);
+    await saveJob(job);
   } catch (e) {
     const message =
       e instanceof Error
@@ -506,9 +548,12 @@ export async function advanceJob(id: string) {
       job.status = "failed";
       job.message = message;
     }
-    saveJob(job);
+    await saveJob(job);
   } finally {
-    storage().run("UPDATE publishing_jobs SET lease_until=0 WHERE id=?", id);
+    await storage().run(
+      "UPDATE publishing_jobs SET lease_until=0 WHERE id=?",
+      id,
+    );
   }
   return jobSummary(job);
 }

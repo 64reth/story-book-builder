@@ -4,7 +4,14 @@ import { mkdtempSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { partialFixture } from "./fixtures/partial-book";
-import { createBook, get, put, saveBook, saveJob } from "../src/lib/repository";
+import {
+  createBook,
+  get,
+  put,
+  saveBook,
+  saveJob,
+  bookById,
+} from "../src/lib/repository";
 import {
   fieldManifest,
   refinementPlan,
@@ -25,15 +32,14 @@ const original = globalThis.fetch;
 afterEach(() => {
   globalThis.fetch = original;
 });
-const json = (v: unknown) => new Response(JSON.stringify(v));
 test("explicit draft selection, no-change detection, changed-only partial updates, and matching completion", async () => {
   const { book, template, assets } = partialFixture();
-  const local = createBook(book.title, "", 33);
+  const local = await createBook(book.title, "", 33);
   book.id = local.id;
-  put("templates", template.id, template);
-  assets.forEach((a) => put("assets", a.id, a));
-  saveBook(book);
-  storeTokens({
+  await put("templates", template.id, template);
+  for (const a of assets) await put("assets", a.id, a);
+  await saveBook(book);
+  await storeTokens({
     access_token: "fixture",
     refresh_token: "fixture",
     expires_in: 14400,
@@ -58,8 +64,8 @@ test("explicit draft selection, no-change detection, changed-only partial update
     uploaded: {},
     manifest: fieldManifest(fields, assets),
   };
-  saveJob(previous);
-  assert.equal(activeDraft(book.id), undefined);
+  await saveJob(previous);
+  assert.equal(await activeDraft(book.id), undefined);
   let posts = 0;
   globalThis.fetch = async (url, init) => {
     const endpoint = String(url);
@@ -67,6 +73,7 @@ test("explicit draft selection, no-change detection, changed-only partial update
       posts++;
       const p = JSON.parse(init.body as string);
       assert.equal(p.type, "update_design");
+      assert.equal(p.title, undefined);
       assert.equal(p.design_id, "generated");
       assert.deepEqual(Object.keys(p.data), ["PAGE_01_TEXT"]);
       return json({ job: { id: "update-job", status: "in_progress" } });
@@ -106,7 +113,7 @@ test("explicit draft selection, no-change detection, changed-only partial update
   );
   const current = getBook();
   current.pages[0].text = "Revised opening";
-  saveBook(current);
+  await saveBook(current);
   const plan = await refinementPlan(book.id);
   assert.deepEqual(
     plan.fields.map((f) => f.field),
@@ -122,9 +129,9 @@ test("explicit draft selection, no-change detection, changed-only partial update
     designId: plan.designId,
   });
   await advanceJob(job.id);
-  const pending = get<PublishJob>("publishing_jobs", job.id)!;
+  const pending = (await get<PublishJob>("publishing_jobs", job.id))!;
   pending.nextAt = 0;
-  saveJob(pending);
+  await saveJob(pending);
   const done = await advanceJob(job.id);
   assert.equal(done.status, "success");
   assert.equal(done.resultType, "update_design");
@@ -134,3 +141,41 @@ test("explicit draft selection, no-change detection, changed-only partial update
     return { ...book, revision: 1, pages: book.pages.map((p) => ({ ...p })) };
   }
 });
+
+test("destination ownership and incompatible changed fields cannot silently update or create a copy", async () => {
+  const prior = (await get<PublishJob>("publishing_jobs", "prior"))!;
+  const book = await bookById(prior.bookId);
+  book.pages[0].text = "Another revision";
+  await saveBook(book);
+  let posts = 0;
+  globalThis.fetch = async (url, init) => {
+    if (init?.method === "POST") posts++;
+    if (String(url).endsWith("/users/me"))
+      return json({ team_user: { user_id: "owner", team_id: "team" } });
+    if (String(url).endsWith("/dataset"))
+      return json({ dataset: { PAGE_01_TEXT: { type: "image" } } });
+    return json({
+      design: {
+        id: "generated",
+        owner: { user_id: "someone-else", team_id: "team" },
+      },
+    });
+  };
+  await assert.rejects(() => refinementPlan(book.id), /not owned/);
+  globalThis.fetch = async (url, init) => {
+    if (init?.method === "POST") posts++;
+    if (String(url).endsWith("/users/me"))
+      return json({ team_user: { user_id: "owner", team_id: "team" } });
+    if (String(url).endsWith("/dataset"))
+      return json({ dataset: { PAGE_01_TEXT: { type: "image" } } });
+    return json({
+      design: { id: "generated", owner: { user_id: "owner", team_id: "team" } },
+    });
+  };
+  await assert.rejects(
+    () => refinementPlan(book.id),
+    /PAGE_01_TEXT.*create a new draft/,
+  );
+  assert.equal(posts, 0);
+});
+const json = (v: unknown) => new Response(JSON.stringify(v));

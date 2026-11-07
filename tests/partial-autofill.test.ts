@@ -37,7 +37,6 @@ const json = (value: unknown, status = 200) =>
   new Response(JSON.stringify(value), { status });
 const mismatch =
   "Page 12 text could not be mapped because PAGE_12_TEXT is an image field. Correct the label in Canva to include this text automatically.";
-
 test("wrong Page 12 type is skipped once while every valid field remains in the partial payload", () => {
   const { book, template, assets } = partialFixture(),
     validation = validateBook(book, template, assets, true, 300);
@@ -81,7 +80,6 @@ test("wrong Page 12 type is skipped once while every valid field remains in the 
     ],
   );
 });
-
 test("33 low-DPI illustrations and six blank texts produce grouped advisories with collapsed diagnostics data", () => {
   const { book, template, assets } = partialFixture(),
     result = validateBook(book, template, assets, true, 300);
@@ -107,7 +105,6 @@ test("33 low-DPI illustrations and six blank texts produce grouped advisories wi
     ),
   );
 });
-
 test("missing artwork, overflow, aspect ratios and page-count mismatch remain advisory", () => {
   const { book, template, assets } = partialFixture();
   book.pages[0].assetId = null;
@@ -129,7 +126,6 @@ test("missing artwork, overflow, aspect ratios and page-count mismatch remain ad
     ),
   );
 });
-
 test("ambiguous duplicates and unmapped fields cannot overwrite populated content", () => {
   const { book, template, assets } = partialFixture();
   template.mapping[1].image = template.mapping[0].image;
@@ -145,7 +141,6 @@ test("ambiguous duplicates and unmapped fields cannot overwrite populated conten
   );
   assert.ok(plan.skipped.some((f) => f.field === "EXTRA"));
 });
-
 test("no compatible populated content and inaccessible datasets are recoverable technical errors", () => {
   const { book, template } = partialFixture();
   book.pages = book.pages.map((p) => ({ ...p, text: "", assetId: null }));
@@ -165,27 +160,29 @@ test("no compatible populated content and inaccessible datasets are recoverable 
     }).errors.some((i) => i.code === "dataset"),
   );
 });
-
 let completedJob: PublishJob;
 test("the durable publishing workflow uploads and generates a partial new design without source mutation", async () => {
   const { book: fixture, template, assets } = partialFixture();
-  const created = createBook(fixture.title, "", 33);
+  const created = await createBook(fixture.title, "", 33);
   fixture.id = created.id;
   fixture.createdAt = created.createdAt;
-  put("templates", template.id, template);
+  await put("templates", template.id, template);
   for (const asset of assets) {
     writeFileSync(assetPath(asset.filename), "x");
-    put("assets", asset.id, asset);
+    await put("assets", asset.id, asset);
   }
-  saveBook(fixture);
-  storeTokens({
+  await saveBook(fixture);
+  await storeTokens({
     access_token: "test-access",
     refresh_token: "test-refresh",
     expires_in: 14400,
   });
   let uploads = 0,
     autofills = 0;
-  const calls: { method: string; url: string }[] = [];
+  const calls: {
+    method: string;
+    url: string;
+  }[] = [];
   globalThis.fetch = async (url, init) => {
     const endpoint = String(url),
       method = init?.method ?? "GET";
@@ -244,13 +241,13 @@ test("the durable publishing workflow uploads and generates a partial new design
   const summary = await startPublishing(fixture.id);
   assert.equal(summary.validation?.skipped?.length, 7);
   for (let n = 0; n < 75; n++) {
-    const job = get<PublishJob>("publishing_jobs", summary.id)!;
+    const job = (await get<PublishJob>("publishing_jobs", summary.id))!;
     if (job.status === "success" || job.status === "failed") break;
     job.nextAt = 0;
-    saveJob(job);
+    await saveJob(job);
     await advanceJob(job.id);
   }
-  completedJob = get<PublishJob>("publishing_jobs", summary.id)!;
+  completedJob = (await get<PublishJob>("publishing_jobs", summary.id))!;
   assert.equal(completedJob.status, "success");
   assert.equal(uploads, 33);
   assert.equal(autofills, 1);
@@ -267,7 +264,6 @@ test("the durable publishing workflow uploads and generates a partial new design
     ),
   );
 });
-
 test("a genuine Canva partial-request rejection fails clearly without retrying as a source update", async () => {
   const job: PublishJob = {
     ...completedJob,
@@ -278,7 +274,7 @@ test("a genuine Canva partial-request rejection fails clearly without retrying a
     designId: undefined,
     designUrl: undefined,
   };
-  saveJob(job);
+  await saveJob(job);
   const methods: string[] = [];
   globalThis.fetch = async (_url, init) => {
     methods.push(init!.method!);
@@ -290,7 +286,6 @@ test("a genuine Canva partial-request rejection fails clearly without retrying a
   assert.match(result.message, /dataset types/);
   assert.deepEqual(methods, ["POST"]);
 });
-
 test("inaccessible live Canva source blocks generation with a recoverable technical message", async () => {
   globalThis.fetch = async () => json({}, 403);
   const result = await publishingValidation(completedJob.bookId, true);

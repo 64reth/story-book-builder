@@ -1,6 +1,5 @@
 import { ZodError, z } from "zod";
-import { readdir, stat } from "node:fs/promises";
-import path from "node:path";
+
 import {
   AppError,
   bookById,
@@ -31,7 +30,7 @@ import {
   requireOwner,
   validOwner,
 } from "@/lib/security";
-import { assetPath, readAsset, removeAsset, upload } from "@/lib/assets";
+import { readAsset, removeAsset, upload } from "@/lib/assets";
 import {
   bookEdit,
   bookInput,
@@ -46,7 +45,7 @@ import {
   publishingValidation,
   startPublishing,
 } from "@/lib/publishing";
-import { dataRoot } from "@/lib/storage";
+
 import type { Asset, PublishJob, Template } from "@/lib/types";
 import {
   activeDraft,
@@ -54,7 +53,6 @@ import {
   refinementPlan,
   selectDraft,
 } from "@/lib/refinement";
-
 const response = (data: unknown, status = 200, headers: HeadersInit = {}) =>
   Response.json(data, {
     status,
@@ -66,14 +64,18 @@ const response = (data: unknown, status = 200, headers: HeadersInit = {}) =>
   });
 async function json(request: Request) {
   const raw = await request.text();
-  if (raw.length > 3_000_000) throw new AppError("Request is too large.", 413);
+  if (raw.length > 3000000) throw new AppError("Request is too large.", 413);
   try {
     return JSON.parse(raw);
   } catch {
     throw new AppError("Invalid JSON request.");
   }
 }
-type Context = { params: Promise<{ path: string[] }> };
+type Context = {
+  params: Promise<{
+    path: string[];
+  }>;
+};
 async function handler(request: Request, context: Context) {
   try {
     const { path: segments } = await context.params,
@@ -81,21 +83,22 @@ async function handler(request: Request, context: Context) {
       method = request.method;
     if (section === "workspace" && method === "GET") {
       localBoundary(request);
-      initialize();
+      if (process.env.STORYBOOK_DEPLOYED === "1") requireOwner(request);
+      await initialize();
       const owner = cookieValue(request),
         cookie = validOwner(owner) ? owner : makeOwner();
-      const assets = list<Asset>("assets");
-      const bytes = await directorySize(dataRoot());
+      const assets = await list<Asset>("assets");
+      const bytes = assets.reduce((sum, asset) => sum + asset.size, 0);
       return response(
         {
-          books: books(),
+          books: await books(),
           assets,
-          templates: list<Template>("templates"),
-          jobs: list<PublishJob>("publishing_jobs")
+          templates: await list<Template>("templates"),
+          jobs: (await list<PublishJob>("publishing_jobs"))
             .map(jobSummary)
             .sort((a, b) => b.createdAt.localeCompare(a.createdAt)),
-          preferences: preferences(),
-          connection: connection(),
+          preferences: await preferences(),
+          connection: await connection(),
           storage: { bytes, assets: assets.length },
         },
         200,
@@ -103,36 +106,43 @@ async function handler(request: Request, context: Context) {
       );
     }
     requireOwner(request, method !== "GET");
-    initialize();
+    await initialize();
     if (section === "books") {
       if (method === "POST" && !id) {
         const input = bookInput.parse(await json(request));
         return response(
-          createBook(input.title, input.author, input.pageCount),
+          await createBook(input.title, input.author, input.pageCount),
           201,
         );
       }
       if (id) {
         if (method === "GET" && action === "versions")
-          return response(versions(id));
-        if (method === "GET" && !action) return response(bookById(id));
+          return response(await versions(id));
+        if (method === "GET" && !action) return response(await bookById(id));
         if (method === "PUT" && !action) {
           const input = bookEdit.parse(await json(request));
-          return response(saveBook({ ...bookById(id), ...input }));
+          return response(
+            await saveBook({ ...(await bookById(id)), ...input }),
+          );
         }
         if (method === "POST" && action === "duplicate")
-          return response(duplicateBook(id), 201);
+          return response(await duplicateBook(id), 201);
         if (method === "POST" && action === "versions")
-          return response(checkpoint(id), 201);
+          return response(await checkpoint(id), 201);
         if (method === "POST" && action === "restore") {
           const input = z
             .object({ versionId: z.string().uuid() })
             .parse(await json(request));
-          const version = versions(id).find((v) => v.id === input.versionId);
+          const version = (await versions(id)).find(
+            (v) => v.id === input.versionId,
+          );
           if (!version) throw new AppError("Version not found.", 404);
-          checkpoint(id);
+          await checkpoint(id);
           return response(
-            saveBook({ ...version.book, revision: bookById(id).revision }),
+            await saveBook({
+              ...version.book,
+              revision: (await bookById(id)).revision,
+            }),
           );
         }
         if (method === "POST" && action === "validate")
@@ -159,8 +169,8 @@ async function handler(request: Request, context: Context) {
         }
         if (method === "GET" && action === "drafts")
           return response({
-            active: activeDraft(id),
-            candidates: draftCandidates(id),
+            active: await activeDraft(id),
+            candidates: await draftCandidates(id),
           });
         if (method === "POST" && action === "drafts")
           return response(
@@ -188,9 +198,8 @@ async function handler(request: Request, context: Context) {
         return response(await upload(file, id), 201);
       }
       if (method === "GET" && id) {
-        const asset = get<Asset>("assets", id);
+        const asset = await get<Asset>("assets", id);
         if (!asset) throw new AppError("Asset not found.", 404);
-        assetPath(asset.filename);
         const bytes = await readAsset(asset);
         return new Response(new Uint8Array(bytes), {
           headers: {
@@ -202,12 +211,12 @@ async function handler(request: Request, context: Context) {
         });
       }
       if (method === "PATCH" && id) {
-        const asset = get<Asset>("assets", id);
+        const asset = await get<Asset>("assets", id);
         if (!asset) throw new AppError("Asset not found.", 404);
         const { name } = z
           .object({ name: z.string().trim().min(1).max(150) })
           .parse(await json(request));
-        put("assets", id, { ...asset, name });
+        await put("assets", id, { ...asset, name });
         return response({ ...asset, name });
       }
       if (method === "DELETE" && id) {
@@ -218,15 +227,15 @@ async function handler(request: Request, context: Context) {
     if (section === "templates") {
       if (method === "POST" && !id) {
         const input = templateInput.parse(await json(request));
-        return response(registerTemplate(input.id, input.name), 201);
+        return response(await registerTemplate(input.id, input.name), 201);
       }
       if (method === "POST" && id && action === "inspect")
         return response(await inspectTemplate(id));
       if (method === "PUT" && id) {
-        const template = get<Template>("templates", id);
+        const template = await get<Template>("templates", id);
         if (!template) throw new AppError("Template not found.", 404);
         const mapping = mappingSchema.parse(await json(request));
-        put("templates", id, { ...template, mapping });
+        await put("templates", id, { ...template, mapping });
         return response({ ...template, mapping });
       }
     }
@@ -236,12 +245,12 @@ async function handler(request: Request, context: Context) {
       return response(await recheckJob(id));
     if (section === "settings" && method === "PUT") {
       const input = preferencesSchema.parse(await json(request));
-      put("settings", "preferences", input);
+      await put("settings", "preferences", input);
       return response(input);
     }
     if (section === "canva" && method === "POST") {
       if (id === "connect")
-        return response({ url: startOAuth(cookieValue(request)) });
+        return response({ url: await startOAuth(cookieValue(request)) });
       if (id === "disconnect") {
         await disconnect();
         return response({ ok: true });
@@ -260,6 +269,7 @@ async function handler(request: Request, context: Context) {
       );
     if (error instanceof AppError)
       return response({ error: error.message }, error.status);
+    console.error("Unexpected workspace failure", error);
     return response(
       {
         error:
@@ -268,17 +278,6 @@ async function handler(request: Request, context: Context) {
       500,
     );
   }
-}
-async function directorySize(dir: string): Promise<number> {
-  const entries = await readdir(dir, { withFileTypes: true });
-  const sizes = await Promise.all(
-    entries.map(async (e) =>
-      e.isDirectory()
-        ? directorySize(path.join(dir, e.name))
-        : (await stat(path.join(dir, e.name))).size,
-    ),
-  );
-  return sizes.reduce((a, b) => a + b, 0);
 }
 export const GET = handler;
 export const POST = handler;

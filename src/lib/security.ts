@@ -74,8 +74,12 @@ export function localBoundary(request: Request, mutation = false) {
     host = request.headers.get("host") || url.host;
   const app = new URL(process.env.APP_URL || "http://127.0.0.1:3000");
   if (
-    !["127.0.0.1", "localhost", "[::1]"].includes(app.hostname) ||
-    host !== app.host
+    (process.env.STORYBOOK_DEPLOYED !== "1" &&
+      !["127.0.0.1", "localhost", "[::1]"].includes(app.hostname)) ||
+    (process.env.STORYBOOK_DEPLOYED === "1" && app.protocol !== "https:") ||
+    (process.env.STORYBOOK_DEPLOYED === "1"
+      ? url.host !== app.host
+      : host !== app.host)
   )
     throw new AppError(
       `Open the workspace at ${app.origin}. Remote access is disabled in single-owner mode.`,
@@ -93,7 +97,12 @@ export function requireOwner(request: Request, mutation = false) {
   localBoundary(request, mutation);
   const owner = cookieValue(request);
   if (!validOwner(owner))
-    throw new AppError("Workspace session expired. Reload the page.", 401);
+    throw new AppError(
+      process.env.STORYBOOK_DEPLOYED === "1"
+        ? "Owner sign-in required."
+        : "Workspace session expired. Reload the page.",
+      401,
+    );
   return owner;
 }
 export function ownerCookie(value: string) {

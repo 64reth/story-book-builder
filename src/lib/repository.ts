@@ -9,34 +9,29 @@ import type {
   PublishJob,
   Template,
 } from "./types";
-export class AppError extends Error {
-  constructor(
-    message: string,
-    public status = 400,
-  ) {
-    super(message);
-  }
-}
+import { AppError } from "./errors";
+export { AppError } from "./errors";
 type Table = "assets" | "templates" | "publishing_jobs" | "settings";
 export const now = () => new Date().toISOString();
-export function list<T>(table: Table): T[] {
-  return storage()
-    .all<{ document: string }>(`SELECT document FROM ${table}`)
-    .map((r) => JSON.parse(r.document));
+export async function list<T>(table: Table): Promise<T[]> {
+  return (
+    await storage().all<{
+      document: string;
+    }>(`SELECT document FROM ${table}`)
+  ).map((r) => JSON.parse(r.document));
 }
-export function get<T>(table: Table, id: string): T | undefined {
-  const row = storage().get<{ document: string }>(
-    `SELECT document FROM ${table} WHERE id=?`,
-    id,
-  );
+export async function get<T>(table: Table, id: string): Promise<T | undefined> {
+  const row = await storage().get<{
+    document: string;
+  }>(`SELECT document FROM ${table} WHERE id=?`, id);
   return row ? JSON.parse(row.document) : undefined;
 }
-export function put(
+export async function put(
   table: Exclude<Table, "publishing_jobs">,
   id: string,
   doc: unknown,
 ) {
-  storage().run(
+  await storage().run(
     `INSERT INTO ${table} (id, document) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET document=excluded.document`,
     id,
     JSON.stringify(doc),
@@ -51,8 +46,8 @@ export const defaults: Preferences = {
   exportFormat: "pdf_print",
   theme: "light",
 };
-export function preferences() {
-  return get<Preferences>("settings", "preferences") ?? defaults;
+export async function preferences() {
+  return (await get<Preferences>("settings", "preferences")) ?? defaults;
 }
 export function blankPage(): Page {
   return {
@@ -67,51 +62,64 @@ export function blankPage(): Page {
     textColor: "#302e36",
   };
 }
-export function books(): Book[] {
-  return storage()
-    .all<{ document: string }>(
-      "SELECT document FROM books ORDER BY updated_at DESC",
-    )
-    .map((r) => {
+export async function books(): Promise<Book[]> {
+  return Promise.all(
+    (
+      await storage().all<{
+        document: string;
+      }>("SELECT document FROM books ORDER BY updated_at DESC")
+    ).map(async (r) => {
       const book = JSON.parse(r.document) as Book;
-      book.pages = storage()
-        .all<{ document: string }>(
+      book.pages = (
+        await storage().all<{
+          document: string;
+        }>(
           "SELECT document FROM pages WHERE book_id=? ORDER BY position",
           book.id,
         )
-        .map((p) => JSON.parse(p.document));
+      ).map((p) => JSON.parse(p.document));
       return book;
-    });
+    }),
+  );
 }
-export function bookById(id: string): Book {
-  const book = books().find((b) => b.id === id);
+export async function bookById(id: string): Promise<Book> {
+  const book = (await books()).find((b) => b.id === id);
   if (!book) throw new AppError("Book not found.", 404);
   return book;
 }
-function writeBook(book: Book) {
-  storage().run(
+async function writeBook(book: Book) {
+  await storage().run(
     "INSERT INTO books (id, document, updated_at) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET document=excluded.document, updated_at=excluded.updated_at",
     book.id,
     JSON.stringify({ ...book, pages: [] }),
     book.updatedAt,
   );
-  storage().run("DELETE FROM pages WHERE book_id=?", book.id);
-  book.pages.forEach((p, i) =>
-    storage().run(
+  await storage().run("DELETE FROM pages WHERE book_id=?", book.id);
+  for (const [i, p] of book.pages.entries())
+    await storage().run(
       "INSERT INTO pages VALUES (?, ?, ?, ?)",
       p.id,
       book.id,
       i,
       JSON.stringify(p),
-    ),
-  );
+    );
 }
-export function createBook(title: string, author: string, count: number) {
-  const p = preferences(),
+export async function createBook(
+  title: string,
+  author: string,
+  count: number,
+  sourceId?: string,
+) {
+  const p = await preferences(),
     timestamp = now();
-  const template = list<Template>("templates").find(
-    (t) => t.pageCount === count,
+  const savedDefault = await get<{ id: string }>(
+    "settings",
+    "default-source-template",
   );
+  const templates = await list<Template>("templates");
+  const template =
+    templates.find((t) => t.id === (savedDefault?.id ?? "DAHaJgBbCJ4")) ??
+    templates.find((t) => t.pageCount === count);
   const book: Book = {
     id: randomUUID(),
     title,
@@ -121,26 +129,26 @@ export function createBook(title: string, author: string, count: number) {
     height: p.height,
     margin: p.margin,
     font: p.font,
-    templateId: template?.id ?? null,
+    templateId: sourceId ?? template?.id ?? null,
     pages: Array.from({ length: count }, blankPage),
     revision: 0,
     createdAt: timestamp,
     updatedAt: timestamp,
   };
-  storage().transaction(() => writeBook(book));
+  await storage().transaction(async () => await writeBook(book));
   return book;
 }
-export function saveBook(book: Book) {
-  return storage().transaction(() => {
-    const current = bookById(book.id);
+export async function saveBook(book: Book) {
+  return await storage().transaction(async () => {
+    const current = await bookById(book.id);
     if (book.revision !== current.revision)
       throw new AppError(
         "This book changed in another tab. Reload before editing to avoid overwriting it.",
         409,
       );
-    if (book.templateId && !get<Template>("templates", book.templateId))
+    if (book.templateId && !(await get<Template>("templates", book.templateId)))
       throw new AppError("Template not found.");
-    const known = new Set(list<Asset>("assets").map((a) => a.id));
+    const known = new Set((await list<Asset>("assets")).map((a) => a.id));
     if (book.pages.some((p) => p.assetId && !known.has(p.assetId)))
       throw new AppError("An assigned illustration no longer exists.");
     const updated = {
@@ -148,12 +156,16 @@ export function saveBook(book: Book) {
       revision: current.revision + 1,
       updatedAt: now(),
     };
-    writeBook(updated);
+    await writeBook(updated);
+    if (updated.templateId)
+      await put("settings", "default-source-template", {
+        id: updated.templateId,
+      });
     return updated;
   });
 }
-export function duplicateBook(id: string) {
-  const source = bookById(id),
+export async function duplicateBook(id: string) {
+  const source = await bookById(id),
     timestamp = now();
   const copy = {
     ...source,
@@ -165,13 +177,13 @@ export function duplicateBook(id: string) {
     updatedAt: timestamp,
     pages: source.pages.map((p) => ({ ...p, id: randomUUID() })),
   };
-  storage().transaction(() => writeBook(copy));
+  await storage().transaction(async () => await writeBook(copy));
   return copy;
 }
-export function checkpoint(id: string) {
-  const book = bookById(id),
+export async function checkpoint(id: string) {
+  const book = await bookById(id),
     version = { id: randomUUID(), createdAt: now(), book };
-  storage().run(
+  await storage().run(
     "INSERT INTO versions VALUES (?, ?, ?, ?)",
     version.id,
     id,
@@ -180,28 +192,32 @@ export function checkpoint(id: string) {
   );
   return version;
 }
-export function versions(id: string) {
-  return storage()
-    .all<{ id: string; created_at: string; document: string }>(
+export async function versions(id: string) {
+  return (
+    await storage().all<{
+      id: string;
+      created_at: string;
+      document: string;
+    }>(
       "SELECT * FROM versions WHERE book_id=? ORDER BY created_at DESC LIMIT 30",
       id,
     )
-    .map((r) => ({
-      id: r.id,
-      createdAt: r.created_at,
-      book: JSON.parse(r.document) as Book,
-    }));
+  ).map((r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+    book: JSON.parse(r.document) as Book,
+  }));
 }
-export function saveJob(job: PublishJob) {
-  storage().run(
+export async function saveJob(job: PublishJob) {
+  await storage().run(
     "INSERT INTO publishing_jobs (id,book_id,document) VALUES (?, ?, ?) ON CONFLICT(id) DO UPDATE SET document=excluded.document",
     job.id,
     job.bookId,
     JSON.stringify({ ...job, updatedAt: now() }),
   );
 }
-export function registerTemplate(id: string, name: string) {
-  if (get("templates", id))
+export async function registerTemplate(id: string, name: string) {
+  if (await get("templates", id))
     throw new AppError("This design is already registered.", 409);
   const template: Template = {
     id,
@@ -212,16 +228,16 @@ export function registerTemplate(id: string, name: string) {
     checkedAt: null,
     error: null,
   };
-  put("templates", id, template);
+  await put("templates", id, template);
   return template;
 }
-export function initialize() {
-  if (get("settings", "initialized")) return;
-  storage().transaction(() => {
-    if (get("settings", "initialized")) return;
+export async function initialize() {
+  if (await get("settings", "initialized")) return;
+  await storage().transaction(async () => {
+    if (await get("settings", "initialized")) return;
     const id = process.env.CANVA_TEMPLATE_DESIGN_ID || "DAHaJgBbCJ4";
-    if (!get("templates", id))
-      put("templates", id, {
+    if (!(await get("templates", id)))
+      await put("templates", id, {
         id,
         name: "Automated Template Builder",
         pageCount: null,
@@ -230,7 +246,7 @@ export function initialize() {
         checkedAt: null,
         error: null,
       } satisfies Template);
-    createBook("Aves Adventures — Nervous Cake", "", 33);
-    put("settings", "initialized", true);
+    await createBook("Aves Adventures — Nervous Cake", "", 33, id);
+    await put("settings", "initialized", true);
   });
 }

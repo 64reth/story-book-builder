@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     ".next/**",
     ".next-browser/**",
     ".local/**",
+    "dist/**",
+    ".cloudflare/**",
     "test-results/**",
     "playwright-report/**",
     "out/**",

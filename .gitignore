@@ -45,6 +45,8 @@ out/
 dist/
 .env
 .env.*
+.dev.vars
+.dev.vars.*
 !.env.example
 *.db
 *.db-*
@@ -58,3 +60,4 @@ test-results/
 .next-browser/
 .vinext/
 .cloudflare/
+.wrangler/

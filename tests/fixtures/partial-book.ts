@@ -6,7 +6,7 @@ export function partialFixture() {
   const stamp = new Date().toISOString(),
     mapping = defaultMapping(33);
   const template: Template = {
-    id: "fixture-source",
+    id: "DAHaJgBbCJ4",
     name: "Partial draft fixture",
     pageCount: 33,
     mapping,

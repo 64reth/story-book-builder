@@ -1,0 +1,1 @@
+CREATE TABLE IF NOT EXISTS token_refresh_leases (id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL);

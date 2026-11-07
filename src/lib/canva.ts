@@ -3,7 +3,6 @@ import { decrypt, encrypt, hash, pkce } from "./security";
 import { storage } from "./storage";
 import { defaultMapping } from "./validation";
 import type { Dataset, RemoteJob, Template } from "./types";
-
 const API = "https://api.canva.com/rest/v1";
 export const SCOPES = [
   "asset:read",
@@ -17,11 +16,11 @@ type Tokens = {
   refresh_token: string;
   expires_at: number;
 };
-const credential = () =>
-  storage().get<{ encrypted: string }>(
-    "SELECT encrypted FROM credentials WHERE id='canva'",
-  );
-export function connection() {
+const credential = async () =>
+  await storage().get<{
+    encrypted: string;
+  }>("SELECT encrypted FROM credentials WHERE id='canva'");
+export async function connection() {
   const missing = [
     "CANVA_CLIENT_ID",
     "CANVA_CLIENT_SECRET",
@@ -29,13 +28,13 @@ export function connection() {
     "SESSION_SECRET",
   ].filter((k) => !process.env[k]);
   return {
-    connected: !!credential(),
+    connected: !!(await credential()),
     configured: missing.length === 0,
     missing,
   };
 }
-function config() {
-  const status = connection();
+async function config() {
+  const status = await connection();
   if (!status.configured)
     throw new AppError(
       `Configure ${status.missing.join(", ")} in .env.local, then restart the application.`,
@@ -56,13 +55,13 @@ function config() {
     redirect,
   };
 }
-function basic() {
-  const c = config();
+async function basic() {
+  const c = await config();
   return (
     "Basic " + Buffer.from(`${c.clientId}:${c.clientSecret}`).toString("base64")
   );
 }
-export function storeTokens(value: {
+export async function storeTokens(value: {
   access_token: string;
   refresh_token: string;
   expires_in: number;
@@ -76,7 +75,7 @@ export function storeTokens(value: {
       "Canva returned an incomplete token response. Reconnect Canva.",
       502,
     );
-  storage().run(
+  await storage().run(
     "INSERT INTO credentials VALUES ('canva', ?) ON CONFLICT(id) DO UPDATE SET encrypted=excluded.encrypted",
     encrypt({
       access_token: value.access_token,
@@ -91,7 +90,7 @@ async function tokenRequest(body: URLSearchParams) {
     response = await fetch(`${API}/oauth/token`, {
       method: "POST",
       headers: {
-        Authorization: basic(),
+        Authorization: await basic(),
         "Content-Type": "application/x-www-form-urlencoded",
       },
       body,
@@ -108,38 +107,80 @@ async function tokenRequest(body: URLSearchParams) {
       `Canva token exchange failed (${response.status}). Check the client secret and redirect URI, then reconnect.`,
       502,
     );
-  storeTokens(await response.json());
+  await storeTokens(await response.json());
 }
-const runtime = globalThis as unknown as { canvaRefresh?: Promise<void> };
+const runtime = globalThis as unknown as {
+  canvaRefresh?: Promise<void>;
+};
+async function refreshWithLease() {
+  const owner = crypto.randomUUID(),
+    until = Date.now() + 30000;
+  const claimed = await storage().run(
+    "INSERT INTO token_refresh_leases VALUES ('canva',?,?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner,expires_at=excluded.expires_at WHERE token_refresh_leases.expires_at < ?",
+    owner,
+    until,
+    Date.now(),
+  );
+  if (!claimed.changes) {
+    for (let i = 0; i < 25; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      const row = await credential();
+      if (row && decrypt<Tokens>(row.encrypted).expires_at > Date.now() + 60000)
+        return;
+    }
+    throw new AppError(
+      "Another Canva token refresh is still pending. Retry shortly.",
+      503,
+    );
+  }
+  try {
+    const row = await credential();
+    if (!row) throw new AppError("Connect Canva in Settings.", 401);
+    const tokens = decrypt<Tokens>(row.encrypted);
+    if (tokens.expires_at > Date.now() + 60000) return;
+    await tokenRequest(
+      new URLSearchParams({
+        grant_type: "refresh_token",
+        refresh_token: tokens.refresh_token,
+      }),
+    );
+  } finally {
+    await storage().run(
+      "DELETE FROM token_refresh_leases WHERE id='canva' AND owner=?",
+      owner,
+    );
+  }
+}
 export async function accessToken() {
-  const row = credential();
+  const row = await credential();
   if (!row) throw new AppError("Connect Canva in Settings.", 401);
   let tokens = decrypt<Tokens>(row.encrypted);
   if (tokens.expires_at < Date.now() + 60000) {
     // Single-process SQLite deployment; coalesce refreshes to protect rotation.
     if (!runtime.canvaRefresh) {
-      runtime.canvaRefresh = tokenRequest(
-        new URLSearchParams({
-          grant_type: "refresh_token",
-          refresh_token: tokens.refresh_token,
-        }),
-      ).finally(() => {
+      runtime.canvaRefresh = refreshWithLease().finally(() => {
         runtime.canvaRefresh = undefined;
       });
     }
     await runtime.canvaRefresh;
-    const current = credential();
+    const current = await credential();
     if (!current) throw new AppError("Canva was disconnected.", 401);
     tokens = decrypt<Tokens>(current.encrypted);
   }
   return tokens.access_token;
 }
-export function startOAuth(owner: string) {
-  const c = config(),
+export async function startOAuth(owner: string) {
+  const c = await config(),
     p = pkce();
-  storage().run("DELETE FROM oauth_states WHERE expires_at < ?", Date.now());
-  storage().run("DELETE FROM oauth_states WHERE owner_hash=?", hash(owner));
-  storage().run(
+  await storage().run(
+    "DELETE FROM oauth_states WHERE expires_at < ?",
+    Date.now(),
+  );
+  await storage().run(
+    "DELETE FROM oauth_states WHERE owner_hash=?",
+    hash(owner),
+  );
+  await storage().run(
     "INSERT INTO oauth_states VALUES (?, ?, ?, ?)",
     hash(p.state),
     hash(owner),
@@ -158,9 +199,9 @@ export function startOAuth(owner: string) {
   }).toString();
   return url.toString();
 }
-export function consumeOAuthState(state: string, owner: string) {
-  return storage().transaction(() => {
-    const row = storage().get<{
+export async function consumeOAuthState(state: string, owner: string) {
+  return await storage().transaction(async () => {
+    const row = await storage().get<{
       owner_hash: string;
       encrypted: string;
       expires_at: number;
@@ -175,8 +216,10 @@ export function consumeOAuthState(state: string, owner: string) {
         "OAuth state is invalid or expired. Start Connect Canva again.",
         403,
       );
-    storage().run("DELETE FROM oauth_states WHERE id=?", hash(state));
-    return decrypt<{ verifier: string }>(row.encrypted).verifier;
+    await storage().run("DELETE FROM oauth_states WHERE id=?", hash(state));
+    return decrypt<{
+      verifier: string;
+    }>(row.encrypted).verifier;
   });
 }
 export async function finishOAuth(code: string, verifier: string) {
@@ -187,22 +230,22 @@ export async function finishOAuth(code: string, verifier: string) {
       grant_type: "authorization_code",
       code,
       code_verifier: verifier,
-      redirect_uri: config().redirect,
+      redirect_uri: (await config()).redirect,
     }),
   );
 }
 export async function disconnect() {
-  const row = credential();
+  const row = await credential();
   if (runtime.canvaRefresh) await runtime.canvaRefresh;
   if (row) {
-    const current = credential();
+    const current = await credential();
     const tokens = decrypt<Tokens>((current ?? row).encrypted);
     let response: Response;
     try {
       response = await fetch(`${API}/oauth/revoke`, {
         method: "POST",
         headers: {
-          Authorization: basic(),
+          Authorization: await basic(),
           "Content-Type": "application/x-www-form-urlencoded",
         },
         body: new URLSearchParams({ token: tokens.refresh_token }),
@@ -219,8 +262,8 @@ export async function disconnect() {
         `Canva could not revoke consent (${response.status}). Retry disconnect.`,
         502,
       );
-    storage().run("DELETE FROM credentials WHERE id='canva'");
-    storage().run("DELETE FROM oauth_states");
+    await storage().run("DELETE FROM credentials WHERE id='canva'");
+    await storage().run("DELETE FROM oauth_states");
   }
 }
 export class CanvaError extends AppError {
@@ -292,14 +335,19 @@ export async function canva<T>(
   }
 }
 export async function inspectTemplate(id: string) {
-  const template = get<Template>("templates", id);
+  const template = await get<Template>("templates", id);
   if (!template) throw new AppError("Template not found.", 404);
   try {
     const [datasetResponse, meta] = await Promise.all([
-      canva<{ dataset: Dataset }>(`/designs/${encodeURIComponent(id)}/dataset`),
-      canva<{ design: { title?: string; page_count?: number } }>(
-        `/designs/${encodeURIComponent(id)}`,
-      ),
+      canva<{
+        dataset: Dataset;
+      }>(`/designs/${encodeURIComponent(id)}/dataset`),
+      canva<{
+        design: {
+          title?: string;
+          page_count?: number;
+        };
+      }>(`/designs/${encodeURIComponent(id)}`),
     ]);
     if (
       !datasetResponse.dataset ||
@@ -325,10 +373,10 @@ export async function inspectTemplate(id: string) {
       checkedAt: now(),
       error: null,
     };
-    put("templates", id, updated);
+    await put("templates", id, updated);
     return updated;
   } catch (e) {
-    put("templates", id, {
+    await put("templates", id, {
       ...template,
       error:
         e instanceof AppError ? e.message : "Could not inspect Canva template.",
@@ -341,7 +389,9 @@ export const remoteJob = (
   init?: RequestInit,
   expectedId?: string,
 ) =>
-  canva<{ job: RemoteJob }>(endpoint, init).then((r) => {
+  canva<{
+    job: RemoteJob;
+  }>(endpoint, init).then((r) => {
     if (
       typeof r?.job?.id !== "string" ||
       !r.job.id.trim() ||
