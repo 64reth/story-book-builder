@@ -2,7 +2,14 @@
 
 ## Live status — 7 November 2026
 
-Staging is deployed at https://story-book-builder-staging.garetha81.workers.dev. Live owner login, all six desktop views, D1 autosave/reload, private artwork upload/read/delete, imported artwork integrity, and hosted Canva OAuth have passed. Production storage is being prepared; production deployment is not yet claimed in this revision.
+Staging is deployed at https://story-book-builder-staging.garetha81.workers.dev and production at https://storybookbuilder.allencreativetechnologies.uk. Both live URLs were checked after deployment. Owner login, all six desktop views, D1 autosave/reload, private artwork upload/read/delete, imported artwork integrity, and persistence across a subsequent deployment have passed in both environments. Staging hosted Canva OAuth has passed. Production is configured for Canva but still awaits independent owner consent; no completed production OAuth is claimed yet.
+
+The deployed application source is commit `dbabc886cb43e70eab0a02efadbc6c339e158e01`. This later documentation update does not change the deployed code.
+
+| Environment | Latest verified Worker version |
+| --- | --- |
+| Staging | `5ff475e2-eea7-4114-9f7c-f3549a0b061d` |
+| Production | `0b98a9e0-4d25-43cc-afc8-2eee6d9b98b5` |
 
 Wrangler `whoami` verified account `203bf3287fc4eb1260ec344a3e0f5071`. R2 account activation is complete. `story-book-builder-assets` was absent, created, then verified by bucket list. Wrangler confirms public r2.dev access is **disabled** and no public bucket custom domain exists.
 
@@ -56,9 +63,10 @@ Rechecking existing recorded jobs confirmed remote job `97151117-98a5-4af4-9ff8-
 - 19 isolated desktop Chrome tests pass, covering imports, replacements, autosave, refinement review and navigation at 1920×1080 and 2560×1440.
 - Workers production build passes. Upstream source-map/icon optimization warnings are non-fatal.
 - Compiled workerd tests pass: owner auth, D1 persistence, private R2 upload/read/delete, multi-megabyte byte integrity, static/R2 binding separation, Origin rejection and OAuth PKCE/encryption compatibility.
-- Live staging Chrome passes six desktop views with zero browser exceptions, owner login, imported artwork SHA-256/MIME checks, private upload/read/delete, UI autosave and full reload. Test data is a separately created archived book; imported books are not edited.
+- Live staging and production Chrome pass six desktop views with zero browser exceptions, owner login, all 44 imported artwork SHA-256/MIME checks, private upload/read/delete, UI autosave and full reload. Each environment has a separately created archived test book; imported books are not edited.
+- Each environment was redeployed after creating its test book and artwork. The saved manuscript, asset association and image hash survived that deployment; `verify-hosted.mjs --resume` checked the original saved receipt.
 - Real hosted OAuth, source dataset and existing job recovery were checked without publishing.
-- The local preservation check and source/build secret scans are required again before the final push.
+- The final local preservation check passes: every original database row, environment byte and upload hash remains unchanged. Source and compiled-build scans find no actual secret values or private data paths committed in history.
 
 ## Commands and release gates
 
@@ -80,3 +88,18 @@ npm.cmd run deploy:staging
 Migration actions are `prepare`, `schema`, `metadata`, `verify`, `artwork`, `verify-artwork`, and `secrets`. Append `--production` only for the explicitly configured production resources. Initial secret files are ignored and existing values are retained.
 
 Production release requires a clean committed tree, the same Git HEAD verified on hosted staging, all recorded hosted checks, verified dedicated production D1/R2 migration and an available exact DNS name. `scripts/release-production.mjs` checks these gates and validates compiled production resource identities before deploying. No bypass flag is provided. Production OAuth must then be authorised independently and verified on its live URL.
+
+## Remaining owner action
+
+Open https://storybookbuilder.allencreativetechnologies.uk/login and use the password in ignored `.local/production-owner-access.json`. In Settings, choose **Connect Canva**, approve consent, and return through the production callback. Then run `scripts/verify-hosted-canva.mjs --production` to verify the live dataset and historical job recovery there. Do not copy the staging or localhost rotating token into production.
+
+The old Canva job returning 404 remains a historical limitation. No design was deleted, overwritten or regenerated during verification. Choose an existing generated draft explicitly before reviewing any refinement; no successful live `update_design` operation has been claimed.
+
+## Changed files
+
+- Bindings and Worker boundary: `cloudflare.config.ts`, `wrangler.jsonc`, `src/worker.ts`, `src/lib/platform-worker.ts`.
+- Artwork streaming and authenticated API: `src/lib/artwork-store.ts`, `src/lib/assets.ts`, `src/app/api/[...path]/route.ts`.
+- Existing Settings copy: `src/components/settings-view.tsx` now describes both creation and reviewed refinement.
+- Migration/release: `scripts/cloudflare-data.mjs`, `scripts/deploy-staging.mjs`, `scripts/release-production.mjs`, and the `deploy:staging` package script.
+- Verification: `scripts/test-worker.mjs`, `scripts/verify-hosted.mjs`, `scripts/verify-hosted-canva.mjs`, `scripts/check-release-secrets.mjs`.
+- Documentation: `README.md` and this report. No other project was edited.
