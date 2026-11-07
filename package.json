@@ -15,7 +15,7 @@
     "start:vinext": "vite preview --mode staging",
     "deploy:vinext": "vinext-cloudflare deploy --env staging",
     "build:next": "next build",
-    "deploy:staging": "vinext-cloudflare deploy --env staging",
+    "deploy:staging": "node scripts/deploy-staging.mjs",
     "deploy:production": "node scripts/release-production.mjs",
     "check:vinext": "vinext check",
     "test:worker": "node scripts/test-worker.mjs",

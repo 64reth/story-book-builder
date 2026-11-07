@@ -5,7 +5,10 @@ import { readFile, writeFile, stat, unlink } from "node:fs/promises";
 function key(filename: string) {
   if (!/^[a-f0-9-]+\.(png|jpeg|webp)$/.test(filename))
     throw new Error("Invalid artwork key.");
-  return filename;
+  const prefix = process.env.STORYBOOK_ARTWORK_PREFIX ?? "";
+  if (prefix !== "" && prefix !== "production/")
+    throw new Error("Invalid artwork storage prefix.");
+  return prefix + filename;
 }
 export async function writeArtwork(
   filename: string,
@@ -30,6 +33,19 @@ export async function readArtwork(filename: string) {
     return Buffer.from(await obj.arrayBuffer());
   }
   return readFile(path.join(uploadRoot(), key(filename)));
+}
+export async function artworkBody(filename: string) {
+  const bucket = artworkBucket();
+  if (bucket) {
+    const object = await bucket.get(key(filename));
+    if (!object) throw new Error("Artwork not found.");
+    return {
+      body: object.body as unknown as ReadableStream<Uint8Array>,
+      size: object.size,
+    };
+  }
+  const bytes = await readFile(path.join(uploadRoot(), key(filename)));
+  return { body: new Uint8Array(bytes), size: bytes.length };
 }
 export async function artworkSize(filename: string) {
   const bucket = artworkBucket();

@@ -1,86 +1,82 @@
-# Cloudflare migration and release status
+# Cloudflare migration and release evidence
 
-## Current result
+## Live status — 7 November 2026
 
-The application has a tested vinext Workers build, portable asynchronous persistence, D1/R2 adapters, hosted owner authentication, and a scoped migration helper. **Hosted deployment is not yet verified.** Cloudflare R2 remains disabled on the authorised account: its API returns HTTP 403, error **10042**, “Please enable R2 through the Cloudflare Dashboard.” The owner must complete that account/billing step. No workaround substitutes transient filesystem storage.
+Staging is deployed at https://story-book-builder-staging.garetha81.workers.dev. Live owner login, all six desktop views, D1 autosave/reload, private artwork upload/read/delete, imported artwork integrity, and hosted Canva OAuth have passed. Production storage is being prepared; production deployment is not yet claimed in this revision.
 
-| Item | Actual status |
-| --- | --- |
-| Repository | `64reth/story-book-builder`, branch `main` |
-| Staging D1 | Created: `story-book-builder-staging` |
-| D1 ID | `67d9f434-bc57-4df3-9921-c7b0cd49bbd4` |
-| D1 metadata | Imported and independently compared against all source rows in eight metadata tables |
-| Staging R2 | Planned `story-book-builder-staging-artwork`; not created while account R2 is disabled |
-| Staging Worker | Planned `story-book-builder-staging`; not deployed/verified yet |
-| Staging address | Intended `https://story-book-builder-staging.garetha81.workers.dev`; not a claimed live deployment |
-| Deployment ID | None |
-| Production Worker | Intended `story-book-builder`; not deployed |
-| Production address | Intended `https://storybookbuilder.allencreativetechnologies.uk`; not deployed |
-| Production zone | `allencreativetechnologies.uk` is active in the authorised account; no DNS changes were made |
-| Canva callbacks | Owner confirmed all three exact redirects are registered, including localhost |
-| Hosted OAuth | Pending actual staging deployment and owner authorization; no live hosted connection claimed |
+Wrangler `whoami` verified account `203bf3287fc4eb1260ec344a3e0f5071`. R2 account activation is complete. `story-book-builder-assets` was absent, created, then verified by bucket list. Wrangler confirms public r2.dev access is **disabled** and no public bucket custom domain exists.
 
-## Runtime and storage
+| Resource | Staging | Production |
+| --- | --- | --- |
+| Worker | `story-book-builder-staging` | `story-book-builder` |
+| D1 name | `story-book-builder-staging` | `story-book-builder-production` |
+| D1 ID | `67d9f434-bc57-4df3-9921-c7b0cd49bbd4` | `d06bc5f4-f30e-4714-9eb9-c01c8fb9b2fd` |
+| Private R2 bucket | `story-book-builder-assets` | `story-book-builder-assets` |
+| Artwork binding | `ASSETS` | `ASSETS` |
+| Object prefix | Root | `production/` |
+| Static website binding | `STATIC_ASSETS` | `STATIC_ASSETS` |
+| Application origin | `https://story-book-builder-staging.garetha81.workers.dev` | `https://storybookbuilder.allencreativetechnologies.uk` |
 
-`storage.ts` defines the asynchronous SQL boundary. `storage-local.ts` retains SQLite for local development, while `platform-worker.ts` supplies D1. Transactions collect mutations into an atomic backend batch. A revision guard aborts stale read/modify/write batches before their writes run. Regression coverage verifies that a concurrent winner is preserved and no partial loser writes escape. SQLite and D1 use the same migration files; no reset or destructive data conversion is performed.
+Production has a separate D1 database, artwork prefix, owner password and session encryption key. Deleting an unreferenced staging upload cannot delete production artwork. Only Story Book Builder resources and the exact requested production hostname are in scope; unrelated resources were not modified.
 
-`artwork-store.ts` stores and retrieves immutable objects through R2 in Workers, and local files only through the local adapter. A missing Worker R2 binding raises an explicit error and cannot fall back to a filesystem. Native SQLite/libvips dependencies are excluded from the Worker dependency graph through platform aliases. The local codec retains Sharp normalization; the Worker codec validates supported image metadata, size/dimensions and single-frame/container boundaries while preserving original bytes. It does not run a native image decoder. The workerd test uploads an image through the real API, checks its R2 object and verifies the returned bytes.
+## Implementation and findings
 
-New migrations add only a transaction revision guard and a distributed Canva refresh lease. The lease serialises rotating-token refreshes across Worker isolates, supplementing local in-process promise coalescing. Existing credential encryption remains AES-256-GCM with the established format; native Workers Node compatibility was exercised for encrypted PKCE state creation and consumption. Hosted owner password verification uses Web Crypto PBKDF2. Secrets are environment-specific bindings, never frontend configuration.
+`cloudflare.config.ts` remains the authoritative typed vinext deployment configuration. `wrangler.jsonc` provides matching staging bindings for the installed Wrangler CLI, using the compiled Worker and static directory. Pass `--config wrangler.jsonc` explicitly: an ignored legacy `.wrangler/deploy/config.json` still points at the old output path. No dependency or application architecture rebuild was needed.
 
-The source SQLite database, uploads, all existing projects and local OAuth credential were retained. A consistent backup is ignored at `.local/pre-cloudflare.sqlite`. Before/after hashes confirmed every original database row, `.env.local` and uploaded file content unchanged during preparation. Import copied 2 books, 66 pages, 44 asset records, 1 template, 2 jobs, 2 generated-design records, 2 versions and the existing settings record. Staging D1 verification compared row content, not just counts; ignored evidence is `.local/staging-d1-verification.json`.
+vinext conventionally uses `ASSETS` for static files. The requested private R2 binding now owns that name, and `src/worker.ts` passes `STATIC_ASSETS` to the framework under its expected static-service name. The actual `cloudflare:workers.env.ASSETS` stays an R2 bucket for server-only artwork operations. Neither a static asset directory nor a public R2 endpoint contains uploaded artwork.
 
-Rotating OAuth credentials and session-bound OAuth states are deliberately not cloned into multiple environments: independent hosted authorization avoids competing refresh-token rotations with localhost. The D1 credential/state tables are ready to persist hosted tokens after that authorization. Local encrypted tokens and localhost configuration were not changed.
+Artwork upload, retrieval and deletion use owner-authenticated `/api/assets` routes. Writes enforce the exact application Origin. The storage adapter uses R2 `put/get/head/delete`, preserving immutable filenames, MIME types and existing asset/book/page references. Deletion refuses assets referenced by books, saved versions or publishing snapshots. Local SQLite/uploads remain the localhost adapter, with no Worker filesystem fallback.
 
-## Owner-only access
+Live verification initially detected incomplete chunked image responses even though R2 downloads were intact. The former API buffered complete objects into several copies. Retrieval now streams R2 bodies and enforces their known length at the outer Worker boundary. Framework response wrapping loses known-length stream metadata, so a final Cloudflare `FixedLengthStream` restores HTTP framing and rejects short/long transfers. Live HTTP now advertises the correct Content-Length. Cache headers are private and prohibit transformation. Chrome subsequently verified all 44 original image hashes. The precise upstream cause of the initial connection truncations was not independently established; the bucket data itself was never corrupt. See the official [Response framing documentation](https://developers.cloudflare.com/workers/runtime-apis/response/) and [FixedLengthStream documentation](https://developers.cloudflare.com/workers/runtime-apis/streams/transformstream/).
 
-Public visitors cannot obtain workspace data, manuscripts, artwork, jobs or publishing responses. Hosted `/api/workspace` requires an existing signed owner cookie before initialization; it never automatically grants a remote visitor an owner session. All remaining API operations have the same owner check. Writes enforce the exact application Origin. OAuth callbacks require the signed owner cookie and one-time owner-bound PKCE state.
+The first deployment correctly refused missing required secrets. `scripts/deploy-staging.mjs` now supplies the ignored secret file through supported `cf deploy --secrets-file`, provisioning secrets atomically with the initial Worker version. No secret values are logged or committed. Production retains the release gate and uses the same first-deployment mechanism.
 
-`/login` verifies an environment-specific random owner password against a PBKDF2 hash, records bounded sign-in attempts in D1, and issues an HttpOnly/SameSite cookie with Secure enabled on hosted HTTPS. Unconfigured authentication fails closed. The password and secret upload file are ignored under `.local/staging-owner-access.json` and `.local/staging-worker-secrets.json`; no secret values are included in this report. The user will need the owner password for hosted sign-in after deployment.
+## Data preservation and migration
 
-## Supported toolchain and commands
+The original SQLite database, all rows, uploaded files, `.env.local` and local encrypted OAuth credentials remain unchanged. A consistent ignored backup is `.local/pre-cloudflare.sqlite`. Preservation verification checks original row content, environment bytes and upload hashes, plus SQLite `quick_check`.
 
-Pinned: vinext 1.4.4, `@vinext/cloudflare` 1.3.3, Cloudflare Vite plugin `2.0.0-beta.v.12`, `cf` 1.0.0-beta.28, Vite 8.3.6 and React/RSC 19.3.1. A project-local Node 24.22 satisfies the CLI requirement without changing system Node or other projects.
+Each hosted database imports 2 books, 66 pages, 44 asset records, 1 template, 2 jobs, 2 generated-design records, 2 versions and the original settings record. `scripts/cloudflare-data.mjs verify` compares every imported metadata row, not just counts. Only additive schema migrations run; databases are never reset. Host sign-in and testing subsequently add their own settings/test records.
 
-The [current vinext deployment guide](https://vinext.dev/docs/deploying/cloudflare) uses `cloudflare.config.ts`, Cloudflare Vite plugin v2 and the `vinext-cloudflare deploy` command. The installed initializer originally resolved a v1 plugin despite the new setup; pinning the exact v2 preview produced the native `.cloudflare/output/v0` Worker build. The old CSS loader and incomplete Next cache options were removed. The app uses its existing plain CSS; no replacement frontend was created. `vinext check` now reports **100% compatibility**.
+All 44 original artwork files are copied without deleting local files. `verify-artwork` downloads every object and compares byte length and SHA-256. Filenames stay unchanged in application records; production object keys have the `production/` isolation prefix. Ignored manifests and verification evidence are under `.local/`.
 
-PowerShell commands:
+OAuth credentials and one-time OAuth state are not cloned between environments, avoiding competing rotating refresh tokens. Hosted Canva consent is independent; localhost configuration and callback remain intact. All three exact redirects are registered. Owner passwords are stored only in ignored `.local/staging-owner-access.json` and `.local/production-owner-access.json`; server password hashes and secrets use Cloudflare secret bindings.
+
+## Actual Canva checks
+
+The owner completed staging consent. The deployed application retrieved protected master `DAHaJgBbCJ4`: 33 pages, 66 dataset fields, and `PAGE_12_TEXT` still has type `image`. It was inspected only; no update, new design or template mutation was submitted.
+
+The populated book validates with no technical errors. Its partial plan contains 26 text fields and 33 image fields, skips incompatible Page 12 text explicitly, and groups missing manuscript/DPI advisories. The other existing book has no selected template and correctly reports that recoverable technical prerequisite.
+
+Rechecking existing recorded jobs confirmed remote job `97151117-98a5-4af4-9ff8-cb37d9b01ad6` succeeded with result type `create_design`, generated design `DAHaK2Bh7W8`, accessible design metadata and a direct Canva edit URL. The other historical job status request returns Canva `404 (not_found)`; no replay or replacement submission was attempted. Original local history remains untouched. Existing copies still require explicit selection; no target was guessed. No live Canva update is claimed.
+
+## Verification
+
+- ESLint and TypeScript pass.
+- 54 automated tests pass, including safe partial Autofill, changed-only refinement, protected master, no-change behavior, job failures and atomic D1-compatible transactions.
+- 19 isolated desktop Chrome tests pass, covering imports, replacements, autosave, refinement review and navigation at 1920×1080 and 2560×1440.
+- Workers production build passes. Upstream source-map/icon optimization warnings are non-fatal.
+- Compiled workerd tests pass: owner auth, D1 persistence, private R2 upload/read/delete, multi-megabyte byte integrity, static/R2 binding separation, Origin rejection and OAuth PKCE/encryption compatibility.
+- Live staging Chrome passes six desktop views with zero browser exceptions, owner login, imported artwork SHA-256/MIME checks, private upload/read/delete, UI autosave and full reload. Test data is a separately created archived book; imported books are not edited.
+- Real hosted OAuth, source dataset and existing job recovery were checked without publishing.
+- The local preservation check and source/build secret scans are required again before the final push.
+
+## Commands and release gates
 
 ```powershell
-npm.cmd run dev                 # Existing localhost + SQLite development
+npx.cmd --no-install wrangler whoami
+npx.cmd --no-install wrangler r2 bucket list --config wrangler.jsonc
+npx.cmd --no-install wrangler r2 bucket dev-url get story-book-builder-assets --config wrangler.jsonc
 npm.cmd run lint
 npm.cmd run typecheck
 npm.cmd run test
 npm.cmd run test:browser
-npm.cmd run check:vinext
-npm.cmd run build               # Staging-mode Workers production build
-npm.cmd run test:worker         # Isolated workerd + simulated D1/R2 smoke
-```
-
-After R2 is enabled, the remaining staging operations are:
-
-```powershell
-node_modules/node/bin/node.exe node_modules/cf/bin/cf r2 buckets create --name story-book-builder-staging-artwork --location-hint weur --mode staging
-node_modules/node/bin/node.exe scripts/cloudflare-data.mjs artwork
+npm.cmd run build
+npm.cmd run test:worker
+node_modules/node/bin/node.exe scripts/verify-hosted.mjs
+node_modules/node/bin/node.exe scripts/verify-hosted-canva.mjs
 npm.cmd run deploy:staging
-node_modules/node/bin/node.exe scripts/cloudflare-data.mjs secrets
 ```
 
-The migration helper is explicitly scoped to this account's new staging resources. It preserves local files and rows, uses idempotent metadata inserts, validates object keys and withholds secret values. Initial deployment must remain fail-closed until the four secret bindings are installed. The CLI may require secret provisioning during the initial deployment; do not claim successful startup until that configuration and hosted testing are complete.
+Migration actions are `prepare`, `schema`, `metadata`, `verify`, `artwork`, `verify-artwork`, and `secrets`. Append `--production` only for the explicitly configured production resources. Initial secret files are ignored and existing values are retained.
 
-Then verify actual HTTPS, owner login, all workspace operations, D1/R2 save/reload, callback completion, live dataset retrieval, non-destructive publishing validation/recovery and result links. Complete hosted Canva OAuth interactively as the owner. Do not create or refine a real Canva design merely as an automated test. Existing copies `DAHaKl_mkXU` and `DAHaK2Bh7W8` must still be explicitly selected after live account/book association checks; neither is guessed as the target.
-
-Production deployment is gated by `scripts/release-production.mjs`. It requires evidence for the same Git HEAD that staging passed all hosted checks, dedicated migrated production storage and availability of the exact DNS name. No production Worker, DNS route or unrelated resource was modified during this work.
-
-## Verification evidence and limits
-
-- ESLint and TypeScript passed.
-- 54 automated tests passed, including field review, no-change detection, partial updates, incompatible destination/ownership rejection, protected master behavior, async failures, import planning and atomic rollback.
-- 19 Chrome tests passed; desktop import/edit/persistence workflows were exercised at both requested desktop sizes.
-- Workers production build passed. Some upstream vinext/RSC source-map and icon optimization warnings remain non-fatal.
-- `vinext check`: 100%, zero partial/unsupported findings.
-- Compiled workerd runtime smoke passed: anonymous denial, owner Web Crypto login, D1 create/save/read, R2 upload/read, Origin rejection, OAuth redirect construction, AES-GCM state portability and invalid/declined state handling. All resources were isolated simulations; this is not hosted verification.
-- The reported high-severity Vite advisory was fixed with 8.3.6. npm still reports 13 moderate dependency advisories; no force upgrade was applied.
-- No live Canva create/update, hosted OAuth completion, hosted dataset inspection, staging deployment ID or production verification is claimed.
-
-`.env.local`, `.dev.vars*`, local databases, uploads, credentials, build output and temporary migration/evidence files are ignored. No other project was edited. No existing Canva design was overwritten, deleted or recreated during this work.
+Production release requires a clean committed tree, the same Git HEAD verified on hosted staging, all recorded hosted checks, verified dedicated production D1/R2 migration and an available exact DNS name. `scripts/release-production.mjs` checks these gates and validates compiled production resource identities before deploying. No bypass flag is provided. Production OAuth must then be authorised independently and verified on its live URL.

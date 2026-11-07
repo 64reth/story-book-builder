@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import type { D1Database, R2Bucket } from "@cloudflare/workers-types";
 import type { Backend } from "./storage";
-const bindings = env as unknown as { DB: D1Database; ARTWORK: R2Bucket };
+const bindings = env as unknown as { DB: D1Database; ASSETS: R2Bucket };
 export async function backend(): Promise<Backend> {
   const db = bindings.DB;
   if (!db) throw new Error("D1 database binding is missing.");
@@ -25,6 +25,6 @@ export async function backend(): Promise<Backend> {
   };
 }
 export const artworkBucket = () => {
-  if (!bindings.ARTWORK) throw new Error("R2 artwork binding is missing.");
-  return bindings.ARTWORK;
+  if (!bindings.ASSETS) throw new Error("R2 artwork binding is missing.");
+  return bindings.ASSETS;
 };

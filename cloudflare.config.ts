@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
       domains: production
         ? ["storybookbuilder.allencreativetechnologies.uk"]
         : [],
-      entrypoint: "vinext/server/fetch-handler",
+      entrypoint: "./src/worker.ts",
       compatibilityDate: "2026-11-06",
       compatibilityFlags: [
         "nodejs_compat",
@@ -24,23 +24,22 @@ export default defineConfig(({ mode }) => {
         runWorkerFirst: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
       },
       env: {
-        ASSETS: bindings.assets(),
+        STATIC_ASSETS: bindings.assets(),
         DB: bindings.d1(
           production
             ? {
                 name: "story-book-builder-production",
-                id: process.env.STORYBOOK_PRODUCTION_DB_ID,
+                id: "d06bc5f4-f30e-4714-9eb9-c01c8fb9b2fd",
               }
             : {
                 id: "67d9f434-bc57-4df3-9921-c7b0cd49bbd4",
                 name: "story-book-builder-staging",
               },
         ),
-        ARTWORK: bindings.r2({
-          name: production
-            ? "story-book-builder-production-artwork"
-            : "story-book-builder-staging-artwork",
-        }),
+        ASSETS: bindings.r2({ name: "story-book-builder-assets" }),
+        STORYBOOK_ARTWORK_PREFIX: bindings.text(
+          production ? "production/" : "",
+        ),
         APP_URL: bindings.text(origin),
         STORYBOOK_DEPLOYED: bindings.text("1"),
         CANVA_REDIRECT_URI: bindings.text(`${origin}/auth/canva/callback`),

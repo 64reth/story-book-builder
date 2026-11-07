@@ -4,17 +4,26 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { randomBytes, pbkdf2Sync, createHash } from "node:crypto";
 import Database from "better-sqlite3";
+const environment = process.argv.includes("--production")
+  ? "production"
+  : "staging";
+const production = environment === "production";
 const account = "203bf3287fc4eb1260ec344a3e0f5071",
-  database = "67d9f434-bc57-4df3-9921-c7b0cd49bbd4";
-const worker = "story-book-builder-staging",
-  bucket = "story-book-builder-staging-artwork";
-const origin = `https://${worker}.garetha81.workers.dev`;
+  database = production
+    ? "d06bc5f4-f30e-4714-9eb9-c01c8fb9b2fd"
+    : "67d9f434-bc57-4df3-9921-c7b0cd49bbd4";
+const worker = production ? "story-book-builder" : "story-book-builder-staging",
+  bucket = "story-book-builder-assets";
+const prefix = production ? "production/" : "";
+const origin = production
+  ? "https://storybookbuilder.allencreativetechnologies.uk"
+  : `https://${worker}.garetha81.workers.dev`;
 const local = path.resolve(".local");
 fs.mkdirSync(local, { recursive: true });
 function cf(args, retry = true) {
   const result = spawnSync(
     path.resolve("node_modules/node/bin/node.exe"),
-    ["node_modules/cf/bin/cf", ...args, "--mode", "staging"],
+    ["node_modules/cf/bin/cf", ...args, "--mode", environment],
     {
       encoding: "utf8",
       maxBuffer: 20 * 1024 * 1024,
@@ -44,7 +53,7 @@ function cf(args, retry = true) {
 const action = process.argv[2];
 if (action === "prepare") {
   process.loadEnvFile(".env.local");
-  const accessFile = path.join(local, "staging-owner-access.json");
+  const accessFile = path.join(local, `${environment}-owner-access.json`);
   if (!fs.existsSync(accessFile)) {
     const password = randomBytes(24).toString("base64url"),
       salt = randomBytes(16).toString("hex");
@@ -62,7 +71,7 @@ if (action === "prepare") {
       { flag: "wx" },
     );
     fs.writeFileSync(
-      path.join(local, "staging-worker-secrets.json"),
+      path.join(local, `${environment}-worker-secrets.json`),
       JSON.stringify(
         Object.fromEntries(
           Object.entries(values).map(([key, text]) => [
@@ -75,7 +84,7 @@ if (action === "prepare") {
     );
   }
   console.log(
-    "Prepared ignored staging owner-access and secret files. Existing local environment was not changed.",
+    `Prepared ignored ${environment} owner-access and secret files. Existing local environment was not changed.`,
   );
 } else if (action === "schema") {
   const batch = [
@@ -103,10 +112,10 @@ if (action === "prepare") {
       params: [file.slice(0, 3), new Date().toISOString()],
     });
   }
-  const file = path.join(local, "staging-schema-batch.json");
+  const file = path.join(local, `${environment}-schema-batch.json`);
   fs.writeFileSync(file, JSON.stringify(batch));
   cf(["d1", "query", database, "--batch", `@${file}`]);
-  console.log("Staging D1 schema applied; no existing rows reset.");
+  console.log(`${environment} D1 schema applied; no existing rows reset.`);
 } else if (action === "metadata") {
   const db = new Database("data/storybook.sqlite", { readonly: true });
   const batch = [],
@@ -134,7 +143,7 @@ if (action === "prepare") {
     }
   }
   db.close();
-  const file = path.join(local, "staging-metadata-batch.json");
+  const file = path.join(local, `${environment}-metadata-batch.json`);
   fs.writeFileSync(file, JSON.stringify(batch));
   cf(["d1", "query", database, "--batch", `@${file}`]);
   console.log(
@@ -191,7 +200,7 @@ if (action === "prepare") {
   }
   db.close();
   fs.writeFileSync(
-    path.join(local, "staging-d1-verification.json"),
+    path.join(local, `${environment}-d1-verification.json`),
     JSON.stringify(
       { database, verifiedAt: new Date().toISOString(), tables: report },
       null,
@@ -215,7 +224,7 @@ if (action === "prepare") {
       "r2",
       "objects",
       "put",
-      name,
+      prefix + name,
       "--bucket-name",
       bucket,
       "--file",
@@ -236,11 +245,73 @@ if (action === "prepare") {
     console.log(`Copied artwork ${count}`);
   }
   fs.writeFileSync(
-    path.join(local, "staging-artwork-manifest.json"),
+    path.join(local, `${environment}-artwork-manifest.json`),
     JSON.stringify(manifest, null, 2),
   );
   console.log(
     `Copied ${count} immutable artwork objects; no local files removed.`,
+  );
+} else if (action === "verify-artwork") {
+  const manifest = JSON.parse(
+    fs.readFileSync(
+      path.join(local, `${environment}-artwork-manifest.json`),
+      "utf8",
+    ),
+  );
+  const directory = path.join(local, `${environment}-r2-verification`);
+  fs.mkdirSync(directory, { recursive: true });
+  for (const object of manifest) {
+    if (!/^[a-f0-9-]+\.(png|jpeg|webp)$/.test(object.name))
+      throw new Error("Invalid manifest key.");
+    const file = path.join(directory, object.name);
+    const result = spawnSync(
+      path.resolve("node_modules/node/bin/node.exe"),
+      [
+        "node_modules/wrangler/bin/wrangler.js",
+        "--config",
+        "wrangler.jsonc",
+        "r2",
+        "object",
+        "get",
+        `${bucket}/${prefix}${object.name}`,
+        "--remote",
+        "--file",
+        file,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: account },
+      },
+    );
+    if (result.status !== 0)
+      throw new Error(
+        `Could not download artwork ${object.name} for verification.`,
+      );
+    const bytes = fs.readFileSync(file);
+    if (
+      bytes.length !== object.bytes ||
+      createHash("sha256").update(bytes).digest("hex") !== object.sha256
+    )
+      throw new Error(
+        `R2 integrity mismatch for ${object.name}; source files retained.`,
+      );
+    console.log(`Verified artwork ${object.name}`);
+  }
+  fs.writeFileSync(
+    path.join(local, `${environment}-r2-verification.json`),
+    JSON.stringify(
+      {
+        bucket,
+        prefix,
+        verifiedAt: new Date().toISOString(),
+        objects: manifest,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log(
+    `Verified all ${manifest.length} R2 objects by download, size and SHA-256. Local originals retained.`,
   );
 } else if (action === "secrets") {
   cf([
@@ -250,7 +321,10 @@ if (action === "prepare") {
     "--worker",
     worker,
     "--secrets",
-    `@${path.join(local, "staging-worker-secrets.json")}`,
+    `@${path.join(local, `${environment}-worker-secrets.json`)}`,
   ]);
-  console.log("Staging secret bindings uploaded. Values withheld.");
-} else throw new Error("Choose prepare, schema, metadata, artwork or secrets.");
+  console.log(`${environment} secret bindings uploaded. Values withheld.`);
+} else
+  throw new Error(
+    "Choose prepare, schema, metadata, verify, artwork, verify-artwork or secrets.",
+  );

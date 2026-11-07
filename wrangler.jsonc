@@ -1,0 +1,40 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  // Staging CLI configuration for the compiled vinext Worker. Build first.
+  // cloudflare.config.ts remains the vinext deployment source of truth.
+  "name": "story-book-builder-staging",
+  "account_id": "203bf3287fc4eb1260ec344a3e0f5071",
+  "main": ".cloudflare/output/v0/workers/default/bundle/index.js",
+  "no_bundle": true,
+  "find_additional_modules": true,
+  "rules": [{ "type": "ESModule", "globs": ["**/*.js"], "fallthrough": true }],
+  "compatibility_date": "2026-11-06",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "nodejs_compat_populate_process_env",
+  ],
+  "assets": {
+    "directory": ".cloudflare/output/v0/workers/default/assets",
+    "binding": "STATIC_ASSETS",
+    "html_handling": "none",
+    "not_found_handling": "none",
+    "run_worker_first": ["/*", "!/_next/static/*", "!/*/_next/static/*"],
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "story-book-builder-staging",
+      "database_id": "67d9f434-bc57-4df3-9921-c7b0cd49bbd4",
+    },
+  ],
+  "r2_buckets": [
+    { "binding": "ASSETS", "bucket_name": "story-book-builder-assets" },
+  ],
+  "vars": {
+    "APP_URL": "https://story-book-builder-staging.garetha81.workers.dev",
+    "STORYBOOK_DEPLOYED": "1",
+    "STORYBOOK_ARTWORK_PREFIX": "",
+    "CANVA_REDIRECT_URI": "https://story-book-builder-staging.garetha81.workers.dev/auth/canva/callback",
+    "CANVA_TEMPLATE_DESIGN_ID": "DAHaJgBbCJ4",
+  },
+}

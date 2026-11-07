@@ -25,7 +25,7 @@ const mf = new Miniflare(
           "nodejs_compat_populate_process_env",
         ],
         d1Databases: { DB: "test-db" },
-        r2Buckets: ["ARTWORK"],
+        r2Buckets: ["ASSETS"],
         bindings: {
           APP_URL: origin,
           STORYBOOK_DEPLOYED: "1",
@@ -37,7 +37,10 @@ const mf = new Miniflare(
           CANVA_REDIRECT_URI: `${origin}/auth/canva/callback`,
         },
         serviceBindings: {
-          ASSETS: async () => new Response("Not found", { status: 404 }),
+          STATIC_ASSETS: async (request) =>
+            new URL(request.url).pathname === "/globe.svg"
+              ? new Response("Static binding is separate from private R2")
+              : new Response("Not found", { status: 404 }),
         },
       },
     ],
@@ -74,6 +77,10 @@ try {
     });
   const anonymous = await call("/api/workspace");
   assert.equal(anonymous.status, 401, await anonymous.clone().text());
+  assert.equal(
+    await (await call("/globe.svg")).text(),
+    "Static binding is separate from private R2",
+  );
   for (const route of [
     "/api/assets/private",
     "/api/books/private",
@@ -152,14 +159,50 @@ try {
   const asset = await uploaded.json();
   assert.equal(uploaded.status, 201, JSON.stringify(asset));
   assert.equal(
-    (await mf.getR2Bucket("ARTWORK")).head
-      ? !!(await (await mf.getR2Bucket("ARTWORK")).head(asset.filename))
+    (await mf.getR2Bucket("ASSETS")).head
+      ? !!(await (await mf.getR2Bucket("ASSETS")).head(asset.filename))
       : false,
     true,
   );
   const read = await call(`/api/assets/${asset.id}`, { headers });
   assert.equal(read.status, 200);
   assert.deepEqual(Buffer.from(await read.arrayBuffer()), png);
+  assert.ok(read.headers.get("cache-control").includes("no-transform"));
+  assert.equal(
+    (await call(`/api/assets/${asset.id}`, { method: "DELETE", headers }))
+      .status,
+    200,
+  );
+  assert.equal(
+    await (await mf.getR2Bucket("ASSETS")).head(asset.filename),
+    null,
+  );
+  assert.equal(
+    (await call(`/api/assets/${asset.id}`, { headers })).status,
+    404,
+  );
+  // A multi-megabyte response must retain its exact size and bytes end to end.
+  const large = Buffer.alloc(5 * 1024 * 1024, 0x6a);
+  const largeAsset = {
+    ...asset,
+    id: "large-transfer-fixture",
+    filename: "12345678-abcd-1234-abcd-123456789abc.png",
+    size: large.length,
+  };
+  await (await mf.getR2Bucket("ASSETS")).put(largeAsset.filename, large);
+  await db
+    .prepare("INSERT INTO assets VALUES (?,?)")
+    .bind(largeAsset.id, JSON.stringify(largeAsset))
+    .run();
+  const largeResponse = await call(`/api/assets/${largeAsset.id}`, { headers });
+  assert.equal(largeResponse.status, 200);
+  assert.deepEqual(Buffer.from(await largeResponse.arrayBuffer()), large);
+  assert.ok(
+    (await call(`/${largeAsset.filename}`)).headers
+      .get("content-type")
+      .includes("text/html"),
+    "R2 objects cannot be read as public static files",
+  );
   const rejected = await call(`/api/books/${book.id}`, {
     method: "PUT",
     headers: { ...headers, Origin: "https://attacker.example" },

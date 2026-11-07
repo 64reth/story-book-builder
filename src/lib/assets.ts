@@ -1,5 +1,10 @@
 import { randomUUID } from "node:crypto";
-import { readArtwork, writeArtwork, deleteArtwork } from "./artwork-store";
+import {
+  readArtwork,
+  writeArtwork,
+  deleteArtwork,
+  artworkBody,
+} from "./artwork-store";
 import path from "node:path";
 import { canonicalImage } from "@/lib/image-codec";
 import { AppError, books, get, list, now, put } from "./repository";
@@ -58,6 +63,16 @@ export async function readAsset(asset: Asset) {
   } catch {
     throw new AppError(
       `Illustration “${asset.name}” is missing from local storage. Replace it in Assets.`,
+      409,
+    );
+  }
+}
+export async function assetBody(asset: Asset) {
+  try {
+    return await artworkBody(asset.filename);
+  } catch {
+    throw new AppError(
+      `Illustration “${asset.name}” is unavailable in storage. Replace it in Assets.`,
       409,
     );
   }

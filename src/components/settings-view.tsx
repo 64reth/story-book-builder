@@ -54,7 +54,10 @@ export default function Settings({
             </div>
             <div>
               <Check size={18} />
-              <span>Generation creates a new design from your source.</span>
+              <span>
+                Create a new draft or review changed fields before refining an
+                existing draft.
+              </span>
             </div>
           </div>
           <div className="form-actions">

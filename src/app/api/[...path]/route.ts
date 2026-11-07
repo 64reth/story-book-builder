@@ -30,7 +30,7 @@ import {
   requireOwner,
   validOwner,
 } from "@/lib/security";
-import { readAsset, removeAsset, upload } from "@/lib/assets";
+import { assetBody, removeAsset, upload } from "@/lib/assets";
 import {
   bookEdit,
   bookInput,
@@ -200,11 +200,15 @@ async function handler(request: Request, context: Context) {
       if (method === "GET" && id) {
         const asset = await get<Asset>("assets", id);
         if (!asset) throw new AppError("Asset not found.", 404);
-        const bytes = await readAsset(asset);
-        return new Response(new Uint8Array(bytes), {
+        const { body, size } = await assetBody(asset);
+        return new Response(body, {
           headers: {
             "Content-Type": asset.mime,
-            "Cache-Control": "private, max-age=0, must-revalidate",
+            "Content-Length": String(size),
+            // Preserve size through framework response wrapping. The Worker
+            // removes this header and enforces framing at its outer boundary.
+            ...(process.env.STORYBOOK_DEPLOYED === "1" ? { "X-Storybook-Artwork-Length": String(size) } : {}),
+            "Cache-Control": "private, max-age=0, must-revalidate, no-transform",
             "X-Content-Type-Options": "nosniff",
             "Content-Disposition": "inline",
           },

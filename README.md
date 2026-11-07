@@ -47,7 +47,7 @@ Chrome coverage targets 1920×1080 and 2560×1440. `test:worker` exercises the c
 
 ## Cloudflare release
 
-[Cloudflare status and runbook](docs/CLOUDFLARE.md) records the actual resources, migration evidence, supported commands and remaining release gates. A staging D1 database was created and its imported metadata verified. **R2 account enablement is still required; no hosted deployment success is claimed.**
+[Cloudflare status and runbook](docs/CLOUDFLARE.md) records live verification and release gates. Staging is deployed with private R2 artwork, migrated D1 metadata and independently authorised hosted Canva OAuth. Production release requires the verified staging commit and production migration evidence.
 
 Hosted access requires an owner login before any workspace/API data is returned. Secrets use Cloudflare secret bindings. `.env.local`, `.dev.vars*`, local databases/uploads, token state and temporary credential files are ignored. Hosted OAuth is authorised independently so localhost and hosted deployments do not compete over one rotating refresh token.
 
