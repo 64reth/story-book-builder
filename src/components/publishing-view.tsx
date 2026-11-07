@@ -110,7 +110,7 @@ export default function Publishing({
       setPaused(false);
       notify(
         result.status === "success"
-          ? `Canva confirmed CREATED design ${result.designId}. Link refreshed.`
+          ? `Canva confirmed ${result.operation === "update_design" ? "UPDATED" : "CREATED"} design ${result.designId}. Link refreshed.`
           : result.message,
       );
     } catch (error) {
@@ -396,12 +396,20 @@ export default function Publishing({
                   </td>
                   <td className="job-message">
                     {job.message}
-                    {job.status === "success" && (
-                      <p>
-                        <strong>CREATED a separate design</strong> · Existing
-                        Canva books were not updated.
-                      </p>
-                    )}
+                    {job.status === "success" &&
+                      job.operation !== "update_design" && (
+                        <p>
+                          <strong>CREATED a separate design</strong> · Existing
+                          Canva books were not updated.
+                        </p>
+                      )}
+                    {job.status === "success" &&
+                      job.operation === "update_design" && (
+                        <p>
+                          <strong>UPDATED existing design</strong> · Only
+                          reviewed changed fields were submitted.
+                        </p>
+                      )}
                     {job.remoteId && job.remoteId !== "uncertain" && (
                       <p>
                         Canva job ID: <code>{job.remoteId}</code>

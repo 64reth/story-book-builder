@@ -36,6 +36,7 @@ export default function DraftControls({
     (j) => j.bookId === book.id && j.status === "success",
   );
   const { refresh } = actions;
+  const [pollRetry, setPollRetry] = useState(0);
   useEffect(() => {
     let cancelled = false;
     void api<Drafts>(`books/${book.id}/drafts`)
@@ -60,7 +61,7 @@ export default function DraftControls({
       Math.min(60000, Math.max(1000, activeJob.nextAt - Date.now())),
     );
     return () => clearTimeout(timer);
-  }, [activeJob, refresh]);
+  }, [activeJob, refresh, pollRetry]);
   async function run(operation: () => Promise<unknown>) {
     setBusy(true);
     setError("");
@@ -99,15 +100,16 @@ export default function DraftControls({
             aria-label="Active Canva draft"
             value={drafts.active ?? ""}
             disabled={busy || !!activeJob}
-            onChange={(e) =>
+            onChange={(e) => {
+              const designId = e.target.value;
               void run(async () => {
                 await api(`books/${book.id}/drafts`, "POST", {
-                  designId: e.target.value,
+                  designId,
                 });
-                setDrafts({ ...drafts, active: e.target.value });
+                setDrafts({ ...drafts, active: designId });
                 setPlan(null);
-              })
-            }
+              });
+            }}
           >
             <option value="" disabled>
               Select a generated draft
@@ -213,6 +215,16 @@ export default function DraftControls({
       {error && (
         <p className="notice error" role="alert">
           {error}
+          {activeJob && (
+            <button
+              onClick={() => {
+                setError("");
+                setPollRetry((n) => n + 1);
+              }}
+            >
+              Resume status checks
+            </button>
+          )}
         </p>
       )}
     </div>

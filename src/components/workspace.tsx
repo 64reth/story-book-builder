@@ -54,6 +54,7 @@ export default function WorkspaceApp() {
     [busy, setBusy] = useState(0),
     [unsaved, setUnsaved] = useState(false),
     [mobileMenu, setMobileMenu] = useState(false);
+  const [selectedBookId, setSelectedBookId] = useState("");
   const refresh = useCallback(async () => {
     const value = await loadWorkspace();
     setData(value);
@@ -110,6 +111,9 @@ export default function WorkspaceApp() {
     ? pathname.split("/")[2]
     : null;
   const book = data?.books.find((b) => b.id === editorId);
+  const workingBook =
+    data?.books.find((b) => b.id === selectedBookId) ??
+    data?.books.find((b) => b.status !== "archived");
   const section =
     navigation.find((n) => n.href !== "/" && pathname.startsWith(n.href)) ||
     navigation[0];
@@ -187,6 +191,23 @@ export default function WorkspaceApp() {
       </aside>
       <div className="main-shell">
         <header className="topbar">
+          <div className="desktop-navigation">
+            <Link href="/" onClick={guard}>
+              <BookOpen size={20} /> Story Book Builder
+            </Link>
+            <details>
+              <summary>Workspace tools</summary>
+              <nav aria-label="Workspace tools">
+                {navigation
+                  .filter((n) => n.href !== "/")
+                  .map((n) => (
+                    <Link href={n.href} key={n.href} onClick={guard}>
+                      {n.label}
+                    </Link>
+                  ))}
+              </nav>
+            </details>
+          </div>
           <div className="breadcrumb">
             <button
               className="icon-button menu-toggle"
@@ -238,6 +259,11 @@ export default function WorkspaceApp() {
               <div>
                 <strong>Workspace could not be loaded</strong>
                 <p>{error}</p>
+                {error.includes("Owner sign-in required") && (
+                  <Link className="button primary" href="/login">
+                    Owner sign-in
+                  </Link>
+                )}
               </div>
               <button
                 onClick={() => {
@@ -260,13 +286,15 @@ export default function WorkspaceApp() {
             </div>
           ) : editorId ? (
             book ? (
-              <Editor
-                key={book.id}
-                book={book}
-                data={data}
-                actions={actions}
-                onUnsaved={setUnsaved}
-              />
+              <div className="desktop-workspace">
+                <Editor
+                  key={book.id}
+                  book={book}
+                  data={data}
+                  actions={actions}
+                  onUnsaved={setUnsaved}
+                />
+              </div>
             ) : (
               <Empty title="Book not found">
                 <Link className="button" href="/books">
@@ -275,7 +303,49 @@ export default function WorkspaceApp() {
               </Empty>
             )
           ) : pathname === "/" ? (
-            <Dashboard data={data} onCreate={() => setNewBook(true)} />
+            <div className="desktop-workspace">
+              <div className="desk-heading">
+                <h1>Workspace</h1>
+                <label>
+                  Book
+                  <select
+                    aria-label="Book project"
+                    value={workingBook?.id ?? ""}
+                    disabled={unsaved}
+                    onChange={(e) => setSelectedBookId(e.target.value)}
+                  >
+                    {data.books
+                      .filter((b) => b.status !== "archived")
+                      .map((b) => (
+                        <option key={b.id} value={b.id}>
+                          {b.title}
+                        </option>
+                      ))}
+                  </select>
+                </label>
+                <button onClick={() => setNewBook(true)} disabled={unsaved}>
+                  <Plus size={17} />
+                  New Book
+                </button>
+                <details>
+                  <summary>Overview</summary>
+                  <Dashboard data={data} onCreate={() => setNewBook(true)} />
+                </details>
+              </div>
+              {workingBook ? (
+                <Editor
+                  key={workingBook.id}
+                  book={workingBook}
+                  data={data}
+                  actions={actions}
+                  onUnsaved={setUnsaved}
+                />
+              ) : (
+                <Empty title="Start a book">
+                  <button onClick={() => setNewBook(true)}>New Book</button>
+                </Empty>
+              )}
+            </div>
           ) : pathname === "/books" ? (
             <Library
               data={data}
@@ -300,7 +370,7 @@ export default function WorkspaceApp() {
           <span>Story Book Builder</span>
           <span>
             <span className="status-dot" />
-            Data stored on this device
+            Private owner workspace
           </span>
         </footer>
       </div>

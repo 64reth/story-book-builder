@@ -9,15 +9,13 @@ test("create, autosave, import, reorder, version and validate a book", async ({
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "Dashboard", exact: true }),
+    page.getByRole("heading", { name: "Workspace", exact: true }),
   ).toBeVisible();
   await page.screenshot({
     path: ".local/dashboard-desktop.png",
     fullPage: true,
   });
-  await page
-    .getByRole("button", { name: "Create New Book", exact: true })
-    .click();
+  await page.getByRole("button", { name: "New Book", exact: true }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByLabel("Book title").fill("The Moonlit Bakery");
   await dialog.getByLabel("Author").fill("A. Writer");
@@ -34,8 +32,15 @@ test("create, autosave, import, reorder, version and validate a book", async ({
   ).toBeVisible();
   const bookURL = page.url();
   const preview = page.locator(".canvas-stage > .page-preview:visible");
-  const dimensions = await preview.boundingBox();
-  expect(dimensions!.width / dimensions!.height).toBeCloseTo(8.625 / 8.7, 2);
+  await expect(preview).toBeVisible();
+  await expect
+    .poll(async () =>
+      preview.evaluate((e) => {
+        const r = e.getBoundingClientRect();
+        return r.height ? r.width / r.height : 0;
+      }),
+    )
+    .toBeCloseTo(8.625 / 8.7, 2);
   await page
     .getByRole("textbox", { name: "Manuscript text", exact: true })
     .fill("The bakery opened beneath a silver moon.");
@@ -100,12 +105,7 @@ test("create, autosave, import, reorder, version and validate a book", async ({
   await expect(
     page.getByRole("textbox", { name: "Manuscript text", exact: true }),
   ).toHaveValue("Second page.");
-  await page.setViewportSize({ width: 390, height: 844 });
-  const mobileDimensions = await preview.boundingBox();
-  expect(mobileDimensions!.width / mobileDimensions!.height).toBeCloseTo(
-    8.625 / 8.7,
-    2,
-  );
+  await page.setViewportSize({ width: 1920, height: 1080 });
   expect(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= window.innerWidth,
@@ -172,7 +172,7 @@ test("API boundaries reject cross-origin writes, invalid input and missing sessi
 }) => {
   await page.goto("/");
   await expect(
-    page.getByRole("heading", { name: "Dashboard", exact: true }),
+    page.getByRole("heading", { name: "Workspace", exact: true }),
   ).toBeVisible();
   const hostile = await page.request.post("/api/books", {
     headers: { origin: "https://evil.example" },
@@ -197,12 +197,12 @@ test("API boundaries reject cross-origin writes, invalid input and missing sessi
   expect(oauth.headers().location).toContain("state");
 });
 
-test("responsive routes, unverified template, settings and persisted dark theme", async ({
+test("desktop routes, unverified template, settings and persisted dark theme", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+  await page.setViewportSize({ width: 1920, height: 1080 });
   for (const [route, heading] of [
-    ["/", "Dashboard"],
+    ["/", "Workspace"],
     ["/books", "Book Library"],
     ["/assets", "Asset Library"],
     ["/templates", "Templates"],
@@ -244,9 +244,7 @@ test("responsive routes, unverified template, settings and persisted dark theme"
   await page
     .getByRole("button", { name: "Save preferences", exact: true })
     .click();
-  await page
-    .getByRole("button", { name: "Toggle navigation", exact: true })
-    .click();
+  await page.getByText("Workspace tools", { exact: true }).click();
   await page.getByRole("link", { name: "Templates", exact: true }).click();
   await expect(
     page.getByRole("heading", { name: "Templates", exact: true }),

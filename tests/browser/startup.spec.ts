@@ -26,7 +26,7 @@ test("loopback hostname hydrates over HMR and starts exactly one active workspac
   await page.goto("/");
   const data = await (await responsePromise).json();
   await expect(
-    page.getByRole("heading", { name: "Dashboard", exact: true }),
+    page.getByRole("heading", { name: "Workspace", exact: true }),
   ).toBeVisible();
   expect(data.connection.connected).toBe(false);
   expect(data.connection.configured).toBe(false);
@@ -80,7 +80,7 @@ for (const failure of ["http", "network", "json", "schema"] as const) {
       .getByRole("button", { name: "Retry loading workspace" })
       .click();
     await expect(
-      page.getByRole("heading", { name: "Dashboard", exact: true }),
+      page.getByRole("heading", { name: "Workspace", exact: true }),
     ).toBeVisible();
     await expect(alert).toBeHidden();
   });
@@ -112,7 +112,7 @@ test("a stalled startup fetch has a finite deadline and can be retried", async (
   await page.unroute("**/api/workspace", handler);
   await alert.getByRole("button", { name: "Retry loading workspace" }).click();
   await expect(
-    page.getByRole("heading", { name: "Dashboard", exact: true }),
+    page.getByRole("heading", { name: "Workspace", exact: true }),
   ).toBeVisible();
 });
 
@@ -136,10 +136,10 @@ test("empty library renders and all six sections navigate without Canva", async 
     ["Templates", "/templates"],
     ["Publishing", "/publishing"],
     ["Settings", "/settings"],
-    ["Dashboard", "/"],
   ]) {
+    await page.getByText("Workspace tools", { exact: true }).click();
     await page
-      .getByRole("navigation", { name: "Main navigation" })
+      .getByRole("navigation", { name: "Workspace tools" })
       .getByRole("link", { name, exact: true })
       .click();
     await expect(page).toHaveURL(new RegExp(`${path}$`));

@@ -19,8 +19,21 @@ import {
 } from "lucide-react";
 import type { Book, Page, Workspace } from "@/lib/types";
 import { distributeManuscript } from "@/lib/validation";
-import { api, Badge, date, Modal, PagePreview, Spinner, words } from "./ui";
+import {
+  api,
+  Badge,
+  date,
+  Modal,
+  PagePreview,
+  Spinner,
+  words,
+  Issues,
+} from "./ui";
 import type { Actions } from "./workspace";
+import BatchArtwork from "./batch-artwork";
+import DraftControls from "./draft-controls";
+import { numberedManuscript } from "@/lib/batch-import";
+import { validateBook } from "@/lib/validation";
 
 export default function Editor({
   book,
@@ -50,6 +63,31 @@ export default function Editor({
     draftRef = useRef(draft),
     historyTime = useRef(0);
   const { notify, refresh } = actions;
+  const inspected = useRef("");
+  useEffect(() => {
+    const template = data.templates.find((t) => t.id === book.templateId);
+    if (
+      !data.connection.connected ||
+      !template ||
+      inspected.current === template.id
+    )
+      return;
+    inspected.current = template.id;
+    if (
+      template.checkedAt &&
+      Date.now() - Date.parse(template.checkedAt) < 86400000
+    )
+      return;
+    void api(`templates/${template.id}/inspect`, "POST")
+      .then(() => refresh())
+      .catch((e) => notify((e as Error).message, true));
+  }, [
+    book.templateId,
+    data.templates,
+    data.connection.connected,
+    refresh,
+    notify,
+  ]);
   const page = draft.pages[selected],
     asset = data.assets.find((a) => a.id === page.assetId);
   function change(next: Book, record = true) {
@@ -254,6 +292,54 @@ export default function Editor({
           </button>
         </div>
       )}
+      <BatchArtwork
+        book={draft}
+        disabled={dirty || saving}
+        onApply={async (assignments) => {
+          const saved = await api<Book>(`books/${book.id}`, "PUT", {
+            ...draft,
+            pages: draft.pages.map((p, i) => ({
+              ...p,
+              assetId:
+                assignments.find((a) => a.page === i)?.assetId ?? p.assetId,
+            })),
+          });
+          setDraft(saved);
+          draftRef.current = saved;
+          await refresh();
+        }}
+      />
+      <div className="desktop-publish">
+        <DraftControls
+          book={draft}
+          data={data}
+          actions={actions}
+          disabled={dirty || saving}
+        />
+        <details>
+          <summary>
+            {
+              validateBook(
+                draft,
+                data.templates.find((t) => t.id === draft.templateId),
+                data.assets,
+                data.connection.connected,
+                data.preferences.dpi,
+              ).warnings.length
+            }{" "}
+            advisories
+          </summary>
+          <Issues
+            value={validateBook(
+              draft,
+              data.templates.find((t) => t.id === draft.templateId),
+              data.assets,
+              data.connection.connected,
+              data.preferences.dpi,
+            )}
+          />
+        </details>
+      </div>
       <div className="editor-layout">
         <aside className="page-strip">
           <div className="strip-title">
@@ -704,10 +790,10 @@ function ImportManuscript({
             />
           </label>
           <label className="file-button">
-            Read a .txt file
+            Read TXT or Markdown
             <input
               type="file"
-              accept=".txt,text/plain"
+              accept=".txt,.md,text/plain,text/markdown"
               onChange={async (e) => {
                 const file = e.target.files?.[0];
                 if (file) {
@@ -733,7 +819,11 @@ function ImportManuscript({
               onClick={() => {
                 try {
                   setProposed(
-                    distributeManuscript(text, book.pages.length, mode),
+                    numberedManuscript(
+                      text,
+                      book.pages.length,
+                      book.pages.map((p) => p.text),
+                    ) ?? distributeManuscript(text, book.pages.length, mode),
                   );
                   setError("");
                 } catch (e) {
